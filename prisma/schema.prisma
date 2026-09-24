@@ -12,3 +12,71 @@ datasource db {
   provider = "postgresql"
 }
 
+model Customer {
+  id     String  @id @default(cuid())
+  email  String  @unique
+  name   String
+  orders Order[]
+}
+
+model Product {
+  id         String      @id @default(cuid())
+  sku        String      @unique
+  name       String
+  priceCents Int
+  inventory  Inventory[]
+  items      OrderItem[]
+}
+
+model Warehouse {
+  id        String      @id @default(cuid())
+  code      String      @unique
+  name      String
+  lat       Float
+  lng       Float
+  inventory Inventory[]
+  orders    Order[]
+}
+
+model Inventory {
+  id          String    @id @default(cuid())
+  warehouseId String
+  productId   String
+  quantity    Int       @default(0)
+  warehouse   Warehouse @relation(fields: [warehouseId], references: [id], onDelete: Cascade)
+  product     Product   @relation(fields: [productId], references: [id], onDelete: Cascade)
+
+  @@unique([warehouseId, productId])
+}
+
+enum OrderStatus {
+  CREATED
+  PAID
+  FAILED
+}
+
+model Order {
+  id               String      @id @default(cuid())
+  customerId       String
+  warehouseId      String?
+  totalCents       Int
+  status           OrderStatus @default(CREATED)
+  idempotencyKey   String?     @unique
+  customer         Customer    @relation(fields: [customerId], references: [id])
+  warehouse        Warehouse?  @relation(fields: [warehouseId], references: [id])
+  items            OrderItem[]
+  createdAt        DateTime    @default(now())
+  updatedAt        DateTime    @updatedAt
+  shippingAddress  Json
+  paymentReference String?     @unique
+}
+
+model OrderItem {
+  id             String  @id @default(cuid())
+  orderId        String
+  productId      String
+  quantity       Int
+  unitPriceCents Int
+  order          Order   @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  product        Product @relation(fields: [productId], references: [id])
+}
