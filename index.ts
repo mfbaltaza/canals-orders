@@ -1,5 +1,6 @@
 import Fastify from "fastify";
 import { env } from "./env.ts";
+import { orderRoutes } from "./orders.ts";
 
 const fastify = Fastify({
   logger: {
@@ -10,6 +11,8 @@ const fastify = Fastify({
     },
   },
 });
+
+fastify.register(orderRoutes);
 
 fastify.get("/", async (req, reply) => {
   return { hello: "world" };
