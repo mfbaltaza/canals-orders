@@ -42,41 +42,55 @@ model Inventory {
   id          String    @id @default(cuid())
   warehouseId String
   productId   String
-  quantity    Int       @default(0)
+  quantity    Int       @default(0) // CHECK (quantity >= 0) lives in the migration SQL
   warehouse   Warehouse @relation(fields: [warehouseId], references: [id], onDelete: Cascade)
   product     Product   @relation(fields: [productId], references: [id], onDelete: Cascade)
 
   @@unique([warehouseId, productId])
+  @@index([productId])
 }
 
 enum OrderStatus {
-  CREATED
+  PENDING_PAYMENT
   PAID
-  FAILED
+  PAYMENT_FAILED
+  EXPIRED
 }
 
 model Order {
-  id               String      @id @default(cuid())
-  customerId       String
-  warehouseId      String?
-  totalCents       Int
-  status           OrderStatus @default(CREATED)
-  idempotencyKey   String?     @unique
-  customer         Customer    @relation(fields: [customerId], references: [id])
-  warehouse        Warehouse?  @relation(fields: [warehouseId], references: [id])
-  items            OrderItem[]
-  createdAt        DateTime    @default(now())
-  updatedAt        DateTime    @updatedAt
-  shippingAddress  Json
-  paymentReference String?     @unique
+  id                     String      @id @default(cuid())
+  customerId             String
+  warehouseId            String
+  totalCents             Int
+  status                 OrderStatus @default(PENDING_PAYMENT)
+  idempotencyKey         String
+  idempotencyRequestHash String
+  shippingAddress        Json
+  shippingLat            Float
+  shippingLng            Float
+  paymentReference       String?     @unique
+  createdAt              DateTime    @default(now())
+  updatedAt              DateTime    @updatedAt
+  customer               Customer    @relation(fields: [customerId], references: [id])
+  warehouse              Warehouse   @relation(fields: [warehouseId], references: [id], onDelete: Restrict)
+  items                  OrderItem[]
+
+  // Leading customerId column also serves "orders by customer" lookups
+  @@unique([customerId, idempotencyKey])
+  @@index([warehouseId])
+  @@index([status, createdAt])
 }
 
 model OrderItem {
   id             String  @id @default(cuid())
   orderId        String
   productId      String
-  quantity       Int
+  quantity       Int // CHECK (quantity > 0) lives in the migration SQL
   unitPriceCents Int
   order          Order   @relation(fields: [orderId], references: [id], onDelete: Cascade)
   product        Product @relation(fields: [productId], references: [id])
+
+  // Leading orderId column also serves "items of an order" lookups
+  @@unique([orderId, productId])
+  @@index([productId])
 }

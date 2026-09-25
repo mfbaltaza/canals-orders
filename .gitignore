@@ -1,10 +1,6 @@
 node_modules
+
 # Keep environment variables out of version control
 .env
 
 /generated/prisma
-
-# TypeScript compiler output
-*.js
-*.d.ts
-*.map

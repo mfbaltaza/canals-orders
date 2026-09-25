@@ -5,12 +5,19 @@
   "license": "ISC",
   "author": "Juan Araujo",
   "type": "module",
-  "main": "index.js",
+  "main": "index.ts",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1",
-    "build": "tsc -p tsconfig.json",
-    "start": "node index.js",
-    "postinstall": "prisma skills sync || exit 0"
+    "dev": "node --watch index.ts",
+    "build": "prisma generate && tsc --noEmit",
+    "start": "node index.ts",
+    "typecheck": "tsc --noEmit",
+    "postinstall": "prisma generate",
+    "db:up": "docker compose up -d --wait",
+    "db:migrate": "prisma migrate dev && prisma generate",
+    "db:deploy": "prisma migrate deploy",
+    "db:seed": "prisma db seed",
+    "db:reset": "prisma migrate reset --force && prisma generate",
+    "db:studio": "prisma studio"
   },
   "dependencies": {
     "@prisma/adapter-pg": "^7.10.0",
@@ -24,7 +31,9 @@
     "@types/pg": "^8.23.1",
     "dotenv": "^18.0.3",
     "prisma": "^7.10.0",
-    "tsx": "^4.23.15",
     "typescript": "^7.0.2"
+  },
+  "engines": {
+    "node": ">=22.18"
   }
 }
