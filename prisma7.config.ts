@@ -13,6 +13,7 @@ export default defineConfig({
     // connections, so the session-level advisory lock `migrate` takes isn't
     // guaranteed to hold. It often works anyway; the direct URL makes it reliable.
     // Local Docker has no pooler, so DIRECT_URL can be omitted there.
-    url: process.env["DIRECT_URL"] ?? process.env["DATABASE_URL"]!,
+    // biome-ignore lint/style/noNonNullAssertion: env.ts validates DATABASE_URL at app start; the Prisma CLI fails loudly without it
+    url: process.env.DIRECT_URL ?? process.env.DATABASE_URL!,
   },
 });

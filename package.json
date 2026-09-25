@@ -17,7 +17,9 @@
     "db:deploy": "prisma migrate deploy",
     "db:seed": "prisma db seed",
     "db:reset": "prisma migrate reset --force && prisma generate",
-    "db:studio": "prisma studio"
+    "db:studio": "prisma studio",
+    "lint": "biome check .",
+    "lint:fix": "biome check --write ."
   },
   "dependencies": {
     "@prisma/adapter-pg": "^7.10.0",
@@ -27,6 +29,7 @@
     "zod": "^4.6.5"
   },
   "devDependencies": {
+    "@biomejs/biome": "2.5.14",
     "@types/node": "^26.6.2",
     "@types/pg": "^8.23.1",
     "dotenv": "^18.0.3",
