@@ -3,6 +3,7 @@
 //   npm run concurrency                          20 × 1 unit of SKU-004 from New York
 //   npm run concurrency -- --n 50 --qty 2
 //   npm run concurrency -- --base https://… --allow-remote
+//   npm run concurrency -- --same-key --sku SKU-001   idempotency: N retries of ONE order at once
 //
 // Stock is read from the database in .env, so run it against the server that uses the same database.
 // Every request writes an order: reset with `npm run db:seed` between runs.
@@ -18,6 +19,8 @@ const { values: args } = parseArgs({
     sku: { type: "string", default: "SKU-004" },
     postal: { type: "string", default: "10118" },
     "allow-remote": { type: "boolean", default: false },
+    // Every request sends the same Idempotency-Key: expect 1 order, 1 decrement, every response replaying it
+    "same-key": { type: "boolean", default: false },
   },
 });
 
@@ -52,21 +55,28 @@ const body = {
   payment: { cardNumber: TEST_CARDS.approved },
 };
 
-console.log(`Firing ${n} × (${qty} × ${args.sku}) at ${args.base} …`);
+const sameKey = args["same-key"];
+const sharedKey = `concurrency-${crypto.randomUUID()}`;
+
+console.log(`Firing ${n} × (${qty} × ${args.sku}) at ${args.base}${sameKey ? " with ONE shared key" : ""} …`);
 const started = performance.now();
-const statuses = await Promise.all(
+const responses = await Promise.all(
   Array.from(
     { length: n },
     () =>
       fetch(`${args.base}/orders`, {
         method: "POST",
-        headers: { "content-type": "application/json", "idempotency-key": crypto.randomUUID() },
+        headers: {
+          "content-type": "application/json",
+          "idempotency-key": sameKey ? sharedKey : crypto.randomUUID(),
+        },
         body: JSON.stringify(body),
       })
-        .then((res) => res.status)
-        .catch(() => 0), // 0 = network error, no response
+        .then(async (res) => ({ status: res.status, id: ((await res.json()) as { id?: string }).id }))
+        .catch(() => ({ status: 0, id: undefined })), // 0 = network error, no response
   ),
 );
+const statuses = responses.map((r) => r.status);
 const ms = Math.round(performance.now() - started);
 
 const after = await readStock();
@@ -76,6 +86,8 @@ const tally = new Map<number, number>();
 for (const s of statuses) tally.set(s, (tally.get(s) ?? 0) + 1);
 // 201 = paid, 202 = payment unknown: both keep their reservation. 402 gives the stock back
 const reserved = (tally.get(201) ?? 0) + (tally.get(202) ?? 0);
+// 503 = SERVICE_BUSY (P2028): the transaction never started, nothing written, safe to retry
+const busy = tally.get(503) ?? 0;
 const unitsTaken = [...before].reduce((sum, [code, q]) => sum + q - (after.get(code) ?? 0), 0);
 
 console.log(`\nResponses in ${ms} ms:`);
@@ -83,7 +95,9 @@ console.table(Object.fromEntries([...tally].sort(([a], [b]) => a - b).map(([s, c
 console.log("Stock per warehouse:");
 console.table(Object.fromEntries([...before].map(([code, q]) => [code, { before: q, after: after.get(code) }])));
 
-const checks = [
+const orderIds = new Set(responses.flatMap((r) => (r.id ? [r.id] : [])));
+
+const oversellChecks = [
   { name: "No warehouse went below 0", ok: [...after.values()].every((q) => q >= 0) },
   {
     name: `Stock taken (${unitsTaken}) = successful orders × qty (${reserved * qty})`,
@@ -91,10 +105,22 @@ const checks = [
   },
   { name: `Successful orders (${reserved}) ≤ what the stock allows (${maxPossible})`, ok: reserved <= maxPossible },
   {
-    name: `Fallback filled every possible order (${reserved} = min(n, ${maxPossible}))`,
-    ok: reserved === Math.min(n, maxPossible),
+    name: `Fallback filled every possible order (${reserved} = min(n − ${busy} busy, ${maxPossible}))`,
+    ok: reserved === Math.min(n - busy, maxPossible),
   },
-  { name: "Every other response is 409", ok: (tally.get(409) ?? 0) === n - reserved - (tally.get(402) ?? 0) },
+  {
+    name: "Every other response is 409 or 503",
+    ok: (tally.get(409) ?? 0) + busy === n - reserved - (tally.get(402) ?? 0),
+  },
 ];
+
+// One key = one attempt: the winner creates the order, every other request replays it (7b lookup or P2002)
+const sameKeyChecks = [
+  { name: `Every response carries the same order id (${orderIds.size} distinct)`, ok: orderIds.size === 1 },
+  { name: `Every response is 201, 202 or 503 busy (${reserved} + ${busy} of ${n})`, ok: reserved + busy === n },
+  { name: `Stock taken once (${unitsTaken} = qty ${qty})`, ok: unitsTaken === qty },
+];
+
+const checks = sameKey ? sameKeyChecks : oversellChecks;
 for (const c of checks) console.log(`${c.ok ? "✅" : "❌"} ${c.name}`);
 process.exit(checks.every((c) => c.ok) ? 0 : 1);

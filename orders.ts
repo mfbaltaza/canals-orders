@@ -2,11 +2,19 @@ import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import { prisma } from "./db.ts";
 import { OutOfStock } from "./errors.ts";
-import type { Order } from "./generated/prisma/client.ts";
+import { type Order, type OrderStatus, Prisma } from "./generated/prisma/client.ts";
 import { mockGeocoder } from "./geocoder.ts";
+import { hashRequest } from "./hash.ts";
 import { type ChargeResult, isTestCard, mockPaymentProvider } from "./payment.ts";
 import { CreateOrderBody, IdempotencyKey } from "./schemas.ts";
 import { rankWarehouses } from "./warehouse.ts";
+
+const replayStatusCode: Record<OrderStatus, number> = {
+  PAID: 201,
+  PAYMENT_FAILED: 402,
+  PENDING_PAYMENT: 202,
+  EXPIRED: 409,
+};
 
 export async function orderRoutes(fastify: FastifyInstance) {
   fastify.post("/orders", async (req, reply) => {
@@ -30,6 +38,19 @@ export async function orderRoutes(fastify: FastifyInstance) {
         },
       });
     }
+
+    const orderKey = {
+      customerId: parsedBody.data.customerId,
+      idempotencyKey: parsedIdempotencyKey.data,
+    };
+
+    const repeatedOrder = await prisma.order.findUnique({
+      where: { customerId_idempotencyKey: orderKey },
+    });
+    if (repeatedOrder) {
+      return reply.code(replayStatusCode[repeatedOrder.status]).send(repeatedOrder);
+    }
+
     const paymentMethod = parsedBody.data.payment.cardNumber;
 
     if (!isTestCard(paymentMethod)) {
@@ -80,7 +101,6 @@ export async function orderRoutes(fastify: FastifyInstance) {
       // What matters for avoiding deadlocks isn't that the order is "correct alphabetically". It's that every request uses the same order, and this gives us that.
       .sort((a, b) => a.productId.localeCompare(b.productId));
 
-    // Valid request, but we can't place the address on a map → 422, not 400
     const dest = await mockGeocoder.geocode(parsedBody.data.shippingAddress);
     if (!dest) {
       return reply.code(422).send({
@@ -88,7 +108,6 @@ export async function orderRoutes(fastify: FastifyInstance) {
       });
     }
 
-    // No warehouse has every item right now → 409: a conflict with current stock, may succeed later
     const ranked = await rankWarehouses(dest, parsedBody.data.items);
     if (!ranked.length) {
       return reply.code(409).send({
@@ -97,6 +116,13 @@ export async function orderRoutes(fastify: FastifyInstance) {
     }
 
     let order: Order | undefined;
+
+    const { payment: _payment, ...bodyWithoutPayment } = parsedBody.data;
+    const sortedBody = {
+      ...bodyWithoutPayment,
+      items: bodyWithoutPayment.items.toSorted((a, b) => a.productId.localeCompare(b.productId)),
+    };
+    const requestHash = hashRequest(sortedBody);
 
     for (const candidate of ranked) {
       try {
@@ -118,8 +144,8 @@ export async function orderRoutes(fastify: FastifyInstance) {
               customerId: customer.id,
               warehouseId: candidate.warehouse.id,
               totalCents,
-              idempotencyKey: crypto.randomUUID(),
-              idempotencyRequestHash: "Hash",
+              idempotencyKey: parsedIdempotencyKey.data,
+              idempotencyRequestHash: requestHash,
               shippingAddress: parsedBody.data.shippingAddress,
               shippingLat: dest.lat,
               shippingLng: dest.lng,
@@ -134,6 +160,13 @@ export async function orderRoutes(fastify: FastifyInstance) {
         break;
       } catch (err) {
         if (err instanceof OutOfStock) continue;
+        // A concurrent request with the same key committed first (our transaction rolled back): replay its order
+        if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === "P2002") {
+          const winner = await prisma.order.findUnique({
+            where: { customerId_idempotencyKey: orderKey },
+          });
+          if (winner) return reply.code(replayStatusCode[winner.status]).send(winner);
+        }
         throw err;
       }
     }
@@ -165,7 +198,6 @@ export async function orderRoutes(fastify: FastifyInstance) {
         });
         return reply.code(201).send(paidOrder);
       } catch (err) {
-        // Charged but not recorded: the reference is what the reconciler needs to find it (Layer 13)
         req.log.error(
           { err, orderId: order.id, paymentReference: payment.reference },
           "charged but could not mark PAID",
