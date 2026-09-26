@@ -4,7 +4,7 @@ import { prisma } from "./db.ts";
 import { OutOfStock } from "./errors.ts";
 import type { Order } from "./generated/prisma/client.ts";
 import { mockGeocoder } from "./geocoder.ts";
-import { isTestCard, mockPaymentProvider } from "./payment.ts";
+import { type ChargeResult, isTestCard, mockPaymentProvider } from "./payment.ts";
 import { CreateOrderBody } from "./schemas.ts";
 import { rankWarehouses } from "./warehouse.ts";
 
@@ -134,18 +134,34 @@ export async function orderRoutes(fastify: FastifyInstance) {
       });
     }
 
-    const payment = await mockPaymentProvider.charge({
-      cardNumber: paymentMethod,
-      amountCents: totalCents,
-      description: `Order ${order.id}`,
-    });
+    // After this call money may have moved, so a failure means "unknown" (202), never an error
+    let payment: ChargeResult;
+    try {
+      payment = await mockPaymentProvider.charge({
+        cardNumber: paymentMethod,
+        amountCents: totalCents,
+        description: `Order ${order.id}`,
+      });
+    } catch (err) {
+      req.log.error({ err, orderId: order.id }, "charge threw, outcome unknown");
+      payment = { status: "unknown" };
+    }
 
     if (payment.status === "approved") {
-      const paidOrder = await prisma.order.update({
-        where: { id: order.id, status: "PENDING_PAYMENT" },
-        data: { status: "PAID", paymentReference: payment.reference },
-      });
-      return reply.code(201).send(paidOrder);
+      try {
+        const paidOrder = await prisma.order.update({
+          where: { id: order.id, status: "PENDING_PAYMENT" },
+          data: { status: "PAID", paymentReference: payment.reference },
+        });
+        return reply.code(201).send(paidOrder);
+      } catch (err) {
+        // Charged but not recorded: the reference is what the reconciler needs to find it (Layer 13)
+        req.log.error(
+          { err, orderId: order.id, paymentReference: payment.reference },
+          "charged but could not mark PAID",
+        );
+        return reply.code(202).send(order);
+      }
     }
 
     if (payment.status === "declined") {
