@@ -1,6 +1,7 @@
 import { z } from "zod";
 
 const Id = z.string().trim().min(1);
+export const IdempotencyKey = Id.max(255);
 
 export const ShippingAddress = z.object({
   line1: z.string().trim().min(1),

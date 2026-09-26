@@ -5,11 +5,21 @@ import { OutOfStock } from "./errors.ts";
 import type { Order } from "./generated/prisma/client.ts";
 import { mockGeocoder } from "./geocoder.ts";
 import { type ChargeResult, isTestCard, mockPaymentProvider } from "./payment.ts";
-import { CreateOrderBody } from "./schemas.ts";
+import { CreateOrderBody, IdempotencyKey } from "./schemas.ts";
 import { rankWarehouses } from "./warehouse.ts";
 
 export async function orderRoutes(fastify: FastifyInstance) {
   fastify.post("/orders", async (req, reply) => {
+    const parsedIdempotencyKey = IdempotencyKey.safeParse(req.headers["idempotency-key"]);
+    if (!parsedIdempotencyKey.success) {
+      return reply.code(400).send({
+        error: {
+          code: "IDEMPOTENCY_KEY_INVALID",
+          message: "Missing or invalid Idempotency-Key header",
+          details: z.flattenError(parsedIdempotencyKey.error),
+        },
+      });
+    }
     const parsedBody = CreateOrderBody.safeParse(req.body);
     if (!parsedBody.success) {
       return reply.code(400).send({
