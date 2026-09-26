@@ -2,7 +2,13 @@ node_modules
 
 # Keep environment variables out of version control
 .env
+.env.*
+!.env.example
 
 /generated/prisma
 
 /docs
+
+# Dev-only testing: kept locally
+TESTING.md
+/scripts

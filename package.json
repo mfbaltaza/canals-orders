@@ -19,9 +19,7 @@
     "db:reset": "prisma migrate reset --force && prisma generate",
     "db:studio": "prisma studio",
     "lint": "biome check .",
-    "lint:fix": "biome check --write .",
-    "concurrency": "node scripts/concurrency.ts",
-    "api-checks": "node scripts/api-checks.ts"
+    "lint:fix": "biome check --write ."
   },
   "dependencies": {
     "@prisma/adapter-pg": "^7.10.0",
