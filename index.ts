@@ -30,8 +30,8 @@ fastify.setErrorHandler<FastifyError>((err, req, reply) => {
 
 fastify.register(orderRoutes);
 
-fastify.get("/", async (req, reply) => {
-  return { hello: "world" };
+fastify.get("/", async (_req, _reply) => {
+  return { hello: "canals" };
 });
 
 const start = async () => {

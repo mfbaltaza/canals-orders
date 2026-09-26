@@ -78,6 +78,7 @@ export async function orderRoutes(fastify: FastifyInstance) {
     const customer = await prisma.customer.findUnique({
       where: { id: parsedBody.data.customerId },
     });
+
     if (!customer) {
       return reply.code(404).send({
         error: { code: "CUSTOMER_NOT_FOUND", message: "Customer not found" },
@@ -108,9 +109,8 @@ export async function orderRoutes(fastify: FastifyInstance) {
           unitPriceCents,
         };
       })
-      // What matters for avoiding deadlocks isn't that the order is "correct alphabetically".
-      // It's that every request locks rows in the same order, and this gives us that
       .sort((a, b) => a.productId.localeCompare(b.productId));
+
     const totalCents = orderItems.reduce((sum, item) => sum + item.quantity * item.unitPriceCents, 0);
 
     const dest = await mockGeocoder.geocode(parsedBody.data.shippingAddress);
