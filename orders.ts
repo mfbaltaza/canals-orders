@@ -4,6 +4,7 @@ import { prisma } from "./db.ts";
 import { OutOfStock } from "./errors.ts";
 import type { Order } from "./generated/prisma/client.ts";
 import { mockGeocoder } from "./geocoder.ts";
+import { isTestCard, mockPaymentProvider } from "./payment.ts";
 import { CreateOrderBody } from "./schemas.ts";
 import { rankWarehouses } from "./warehouse.ts";
 
@@ -17,6 +18,13 @@ export async function orderRoutes(fastify: FastifyInstance) {
           message: "Invalid request body",
           details: z.flattenError(parsedBody.error),
         },
+      });
+    }
+    const paymentMethod = parsedBody.data.payment.cardNumber;
+
+    if (!isTestCard(paymentMethod)) {
+      return reply.code(400).send({
+        error: { code: "CARD_NOT_ACCEPTED", message: "Use one of the documented test cards" },
       });
     }
 
@@ -126,6 +134,37 @@ export async function orderRoutes(fastify: FastifyInstance) {
       });
     }
 
-    return reply.code(201).send(order);
+    const payment = await mockPaymentProvider.charge({
+      cardNumber: paymentMethod,
+      amountCents: totalCents,
+      description: `Order ${order.id}`,
+    });
+
+    if (payment.status === "approved") {
+      const paidOrder = await prisma.order.update({
+        where: { id: order.id, status: "PENDING_PAYMENT" },
+        data: { status: "PAID", paymentReference: payment.reference },
+      });
+      return reply.code(201).send(paidOrder);
+    }
+
+    if (payment.status === "declined") {
+      const failedOrder = await prisma.$transaction(async (tx) => {
+        const updated = await tx.order.update({
+          where: { id: order.id, status: "PENDING_PAYMENT" },
+          data: { status: "PAYMENT_FAILED" },
+        });
+        for (const item of orderItems) {
+          await tx.inventory.updateMany({
+            where: { warehouseId: order.warehouseId, productId: item.productId },
+            data: { quantity: { increment: item.quantity } },
+          });
+        }
+        return updated;
+      });
+      return reply.code(402).send(failedOrder);
+    }
+
+    return reply.code(202).send(order);
   });
 }
