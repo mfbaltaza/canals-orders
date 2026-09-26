@@ -72,7 +72,11 @@ const responses = await Promise.all(
         },
         body: JSON.stringify(body),
       })
-        .then(async (res) => ({ status: res.status, id: ((await res.json()) as { id?: string }).id }))
+        // A non-JSON body (e.g. a proxy's HTML 502) must not turn a real status into a fake network error
+        .then(async (res) => ({
+          status: res.status,
+          id: ((await res.json().catch(() => ({}))) as { id?: string }).id,
+        }))
         .catch(() => ({ status: 0, id: undefined })), // 0 = network error, no response
   ),
 );

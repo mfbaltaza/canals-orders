@@ -16,6 +16,10 @@ const replayStatusCode: Record<OrderStatus, number> = {
   EXPIRED: 409,
 };
 
+const outOfStockError = {
+  error: { code: "OUT_OF_STOCK", message: "No warehouse has enough stock for every item" },
+};
+
 export async function orderRoutes(fastify: FastifyInstance) {
   fastify.post("/orders", async (req, reply) => {
     const parsedIdempotencyKey = IdempotencyKey.safeParse(req.headers["idempotency-key"]);
@@ -28,6 +32,7 @@ export async function orderRoutes(fastify: FastifyInstance) {
         },
       });
     }
+
     const parsedBody = CreateOrderBody.safeParse(req.body);
     if (!parsedBody.success) {
       return reply.code(400).send({
@@ -44,16 +49,27 @@ export async function orderRoutes(fastify: FastifyInstance) {
       idempotencyKey: parsedIdempotencyKey.data,
     };
 
-    const repeatedOrder = await prisma.order.findUnique({
-      where: { customerId_idempotencyKey: orderKey },
-    });
-    if (repeatedOrder) {
-      return reply.code(replayStatusCode[repeatedOrder.status]).send(repeatedOrder);
-    }
+    const { payment: _payment, ...bodyWithoutPayment } = parsedBody.data;
+    const sortedBody = {
+      ...bodyWithoutPayment,
+      items: bodyWithoutPayment.items.toSorted((a, b) => a.productId.localeCompare(b.productId)),
+    };
+    const requestHash = hashRequest(sortedBody);
 
-    const paymentMethod = parsedBody.data.payment.cardNumber;
+    const replayExisting = async (): Promise<boolean> => {
+      const existing = await prisma.order.findUnique({
+        where: { customerId_idempotencyKey: orderKey },
+      });
+      if (!existing) return false;
+      reply.code(replayStatusCode[existing.status]).send(existing);
+      return true;
+    };
 
-    if (!isTestCard(paymentMethod)) {
+    if (await replayExisting()) return reply;
+
+    const cardNumber = parsedBody.data.payment.cardNumber;
+
+    if (!isTestCard(cardNumber)) {
       return reply.code(400).send({
         error: { code: "CARD_NOT_ACCEPTED", message: "Use one of the documented test cards" },
       });
@@ -82,12 +98,6 @@ export async function orderRoutes(fastify: FastifyInstance) {
     }
 
     const priceById = new Map(products.map((p) => [p.id, p.priceCents]));
-    const totalCents = parsedBody.data.items.reduce((sum, p) => {
-      const productPrice = priceById.get(p.productId);
-      if (productPrice === undefined) throw new Error(`No product price on item ${p.productId}`);
-      return sum + p.quantity * productPrice;
-    }, 0);
-
     const orderItems = parsedBody.data.items
       .map((p) => {
         const unitPriceCents = priceById.get(p.productId);
@@ -98,8 +108,10 @@ export async function orderRoutes(fastify: FastifyInstance) {
           unitPriceCents,
         };
       })
-      // What matters for avoiding deadlocks isn't that the order is "correct alphabetically". It's that every request uses the same order, and this gives us that.
+      // What matters for avoiding deadlocks isn't that the order is "correct alphabetically".
+      // It's that every request locks rows in the same order, and this gives us that
       .sort((a, b) => a.productId.localeCompare(b.productId));
+    const totalCents = orderItems.reduce((sum, item) => sum + item.quantity * item.unitPriceCents, 0);
 
     const dest = await mockGeocoder.geocode(parsedBody.data.shippingAddress);
     if (!dest) {
@@ -110,20 +122,12 @@ export async function orderRoutes(fastify: FastifyInstance) {
 
     const ranked = await rankWarehouses(dest, parsedBody.data.items);
     if (!ranked.length) {
-      return reply.code(409).send({
-        error: { code: "OUT_OF_STOCK", message: "No warehouse has enough stock for every item" },
-      });
+      // A same-key request may have taken the last units: that's this customer's order, not a sell-out
+      if (await replayExisting()) return reply;
+      return reply.code(409).send(outOfStockError);
     }
 
     let order: Order | undefined;
-
-    const { payment: _payment, ...bodyWithoutPayment } = parsedBody.data;
-    const sortedBody = {
-      ...bodyWithoutPayment,
-      items: bodyWithoutPayment.items.toSorted((a, b) => a.productId.localeCompare(b.productId)),
-    };
-    const requestHash = hashRequest(sortedBody);
-
     for (const candidate of ranked) {
       try {
         order = await prisma.$transaction(async (tx) => {
@@ -162,26 +166,22 @@ export async function orderRoutes(fastify: FastifyInstance) {
         if (err instanceof OutOfStock) continue;
         // A concurrent request with the same key committed first (our transaction rolled back): replay its order
         if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === "P2002") {
-          const winner = await prisma.order.findUnique({
-            where: { customerId_idempotencyKey: orderKey },
-          });
-          if (winner) return reply.code(replayStatusCode[winner.status]).send(winner);
+          if (await replayExisting()) return reply;
         }
         throw err;
       }
     }
 
     if (order === undefined) {
-      return reply.code(409).send({
-        error: { code: "OUT_OF_STOCK", message: "No warehouse has enough stock for every item" },
-      });
+      if (await replayExisting()) return reply;
+      return reply.code(409).send(outOfStockError);
     }
 
     // After this call money may have moved, so a failure means "unknown" (202), never an error
     let payment: ChargeResult;
     try {
       payment = await mockPaymentProvider.charge({
-        cardNumber: paymentMethod,
+        cardNumber,
         amountCents: totalCents,
         description: `Order ${order.id}`,
       });
