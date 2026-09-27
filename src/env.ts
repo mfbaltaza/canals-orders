@@ -13,6 +13,7 @@ const EnvSchema = z
     HOST: z.string().default("127.0.0.1"),
     PORT: z.coerce.number().int().positive().default(3000),
     LOG_LEVEL: z.enum(["fatal", "error", "warn", "info", "debug", "trace", "silent"]).default("info"),
+    GEOCODER_TIMEOUT_MS: z.coerce.number().int().positive().default(2000),
     RATE_LIMIT_MAX: z
       .string()
       .regex(/^\d+$/, "Expected a whole number, 0 turns rate limiting off")

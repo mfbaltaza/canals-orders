@@ -7,6 +7,7 @@ import { prisma } from "./db.ts";
 import { env } from "./env.ts";
 import { healthRoutes } from "./health/health.routes.ts";
 import { orderRoutes } from "./orders/orders.routes.ts";
+import { GeocoderUnavailable } from "./providers/geocoder/geocoder.provider.ts";
 
 const SHUTDOWN_TIMEOUT_MS = 10_000;
 
@@ -38,6 +39,15 @@ fastify.setErrorHandler<FastifyError>((err, req, reply) => {
       .code(503)
       .header("retry-after", "1")
       .send({ error: { code: "SERVICE_BUSY", message: "Too many requests right now, retry shortly" } });
+  }
+  if (err instanceof GeocoderUnavailable) {
+    req.log.warn({ err }, "geocoder unavailable");
+    return reply
+      .code(503)
+      .header("retry-after", "1")
+      .send({
+        error: { code: "GEOCODER_UNAVAILABLE", message: "Could not check the shipping address, retry shortly" },
+      });
   }
   if (err.statusCode !== undefined && err.statusCode < 500) {
     return reply.code(err.statusCode).send({ error: { code: err.code ?? "BAD_REQUEST", message: err.message } });
