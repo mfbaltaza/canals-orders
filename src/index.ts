@@ -1,9 +1,14 @@
+import { randomUUID } from "node:crypto";
 import cors from "@fastify/cors";
 import rateLimit from "@fastify/rate-limit";
-import Fastify, { type FastifyError } from "fastify";
+import Fastify, { type FastifyError, LogController } from "fastify";
 import { Prisma } from "../generated/prisma/client.ts";
+import { prisma } from "./db.ts";
 import { env } from "./env.ts";
+import { healthRoutes } from "./health/health.routes.ts";
 import { orderRoutes } from "./orders/orders.routes.ts";
+
+const SHUTDOWN_TIMEOUT_MS = 10_000;
 
 const fastify = Fastify({
   trustProxy: env.TRUST_PROXY,
@@ -14,6 +19,16 @@ const fastify = Fastify({
       censor: "[REDACTED]",
     },
   },
+  genReqId: () => `req_${randomUUID().replaceAll("-", "")}`,
+  logController: new LogController({ disableRequestLogging: (req) => req.url === "/healthz" }),
+});
+
+fastify.addHook("onRequest", async (req, reply) => {
+  reply.header("request-id", req.id);
+});
+
+fastify.addHook("onClose", async () => {
+  await prisma.$disconnect();
 });
 
 fastify.setErrorHandler<FastifyError>((err, req, reply) => {
@@ -52,6 +67,7 @@ if (env.RATE_LIMIT_MAX > 0) {
   });
 }
 
+fastify.register(healthRoutes);
 fastify.register(orderRoutes);
 
 fastify.get("/", async (_req, _reply) => {
@@ -66,5 +82,24 @@ const start = async () => {
     process.exit(1);
   }
 };
+
+const shutdown = async (signal: NodeJS.Signals) => {
+  fastify.log.info({ signal }, "shutting down, finishing in-flight requests");
+  setTimeout(() => {
+    fastify.log.error(`still busy after ${SHUTDOWN_TIMEOUT_MS}ms, forcing exit`);
+    process.exit(1);
+  }, SHUTDOWN_TIMEOUT_MS).unref();
+  try {
+    await fastify.close();
+    fastify.log.info("shutdown complete");
+    process.exit(0);
+  } catch (err) {
+    fastify.log.error({ err }, "shutdown failed");
+    process.exit(1);
+  }
+};
+
+process.once("SIGTERM", shutdown);
+process.once("SIGINT", shutdown);
 
 start();

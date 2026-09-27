@@ -163,6 +163,8 @@ export async function orderRoutes(fastify: FastifyInstance) {
             },
           });
         });
+        req.log = req.log.child({ orderId: order.id });
+        reply.log = req.log;
         req.log.info(
           { warehouse: candidate.warehouse.code, distanceInKm: Math.round(candidate.distanceInKm) },
           "warehouse selected",
