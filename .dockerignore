@@ -1,0 +1,12 @@
+.git
+.vscode
+node_modules
+generated
+.env
+.env.*
+docs
+scripts
+TESTING.md
+docker
+.dockerignore
+docker-compose.yml

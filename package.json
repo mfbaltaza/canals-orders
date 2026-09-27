@@ -12,7 +12,7 @@
     "start": "node src/index.ts",
     "typecheck": "tsc --noEmit",
     "postinstall": "prisma generate",
-    "db:up": "docker compose up -d --wait",
+    "db:up": "docker compose up -d --wait db",
     "db:migrate": "prisma migrate dev && prisma generate",
     "db:deploy": "prisma migrate deploy",
     "db:seed": "prisma db seed",

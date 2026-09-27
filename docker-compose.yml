@@ -15,5 +15,32 @@ services:
       timeout: 3s
       retries: 15
 
+  # Re-seeds on every `up`: all orders are deleted and stock is reset
+  migrate:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+      target: build
+    command: ["sh", "-c", "npm run db:deploy && npm run db:seed"]
+    environment:
+      DATABASE_URL: postgresql://canals:canals@db:5432/canals_orders
+    depends_on:
+      db:
+        condition: service_healthy
+
+  app:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+      target: runtime
+    init: true
+    environment:
+      DATABASE_URL: postgresql://canals:canals@db:5432/canals_orders
+    ports:
+      - "3000:3000"
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+
 volumes:
   pgdata:
