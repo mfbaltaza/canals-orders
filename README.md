@@ -23,7 +23,7 @@ npm run dev               # http://localhost:3000
 
 | Variable | Required | Default | Notes |
 |---|---|---|---|
-| `DATABASE_URL` | yes | — | Pooled URL on hosts like Neon; validated at boot (`env.ts`) |
+| `DATABASE_URL` | yes | — | Pooled URL on hosts like Neon; validated at boot (`src/env.ts`) |
 | `DIRECT_URL` | only with a pooler | `DATABASE_URL` | Non-pooled URL, used by migrations |
 | `HOST` | no | `127.0.0.1` | Set `0.0.0.0` in containers and on the host |
 | `PORT` | no | `3000` | |
@@ -126,16 +126,26 @@ npm run typecheck && npm run lint
 ## Project layout
 
 ```
-index.ts          Fastify bootstrap, app-wide error handler
-orders.ts         POST /orders, top to bottom
-schemas.ts        Zod request schemas
-env.ts            Validated environment
-db.ts             Prisma client
-warehouse.ts      Distance ranking of candidate warehouses
-geo.ts            Haversine distance
-geocoder.ts       Geocoder interface + mock
-payment.ts        PaymentProvider interface + mock, test cards
-hash.ts           Request hash stored with the idempotency key
-errors.ts         Domain errors
-prisma/           Schema, migrations (hand-written CHECK constraint), seed
+src/
+  index.ts                      Fastify bootstrap, app-wide error handler
+  env.ts                        Validated environment
+  db.ts                         Prisma client
+  orders/
+    orders.routes.ts            POST /orders, top to bottom
+    orders.schemas.ts           Zod request schemas
+    orders.errors.ts            Domain errors
+  warehouses/
+    warehouses.ranking.ts       Distance ranking of candidate warehouses
+  providers/
+    index.ts                    Picks the implementation behind each interface (mocks today)
+    payment/
+      payment.provider.ts       PaymentProvider interface
+      payment.mock.ts           Mock + test cards
+    geocoder/
+      geocoder.provider.ts      Geocoder interface
+      geocoder.mock.ts          Mock (known US postal codes)
+  lib/
+    geo.ts                      Haversine distance
+    hash.ts                     Request hash stored with the idempotency key
+prisma/                         Schema, migrations (hand-written CHECK constraint), seed
 ```

@@ -1,8 +1,9 @@
-import { prisma } from "./db.ts";
-import { type Coordinates, haversineKm } from "./geo.ts";
-import type { CreateOrderInput } from "./schemas.ts";
+import { prisma } from "../db.ts";
+import { type Coordinates, haversineKm } from "../lib/geo.ts";
 
-export async function rankWarehouses(dest: Coordinates, items: CreateOrderInput["items"]) {
+type RequestedItem = { productId: string; quantity: number };
+
+export async function rankWarehouses(dest: Coordinates, items: RequestedItem[]) {
   const productIds = items.map((p) => p.productId);
   const stock = await prisma.inventory.findMany({
     where: { productId: { in: productIds } },

@@ -1,7 +1,7 @@
 import Fastify, { type FastifyError } from "fastify";
+import { Prisma } from "../generated/prisma/client.ts";
 import { env } from "./env.ts";
-import { Prisma } from "./generated/prisma/client.ts";
-import { orderRoutes } from "./orders.ts";
+import { orderRoutes } from "./orders/orders.routes.ts";
 
 const fastify = Fastify({
   logger: {

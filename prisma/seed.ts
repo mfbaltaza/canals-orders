@@ -1,14 +1,10 @@
-import { prisma } from "../db.ts";
+import { prisma } from "../src/db.ts";
 
 // Uneven on purpose so each scenario is demonstrable (NYC test address ≈ EAST):
 // - EAST has no SKU-005 row at all → an NYC order with SKU-005 must go to CENTRAL
 // - SKU-004 has 2 units everywhere → 3 × SKU-004 is impossible → 409
 
-// Re-running the seed deletes all orders and resets stock, so every run starts clean.
-// Orders are never seeded: they must come from POST /orders.
-
-// Fixed, readable ids (Stripe-style prefixes) so the README's curl works on any database.
-// The app still generates cuids for everything it creates (orders, order items).
+// Fixed ids so the README's curl examples work on any database
 const customers = [
   { id: "cus_juan", email: "juan@example.com", name: "Juan" },
   { id: "cus_maricel", email: "maricel@example.com", name: "Maricel" },
@@ -28,7 +24,7 @@ const warehouses = [
   { id: "wh_west", code: "WEST", name: "West (Los Angeles)", lat: 34.0522, lng: -118.2437 },
 ];
 
-// warehouse code → sku → quantity. A missing sku means "this warehouse doesn't stock it".
+// A missing sku means the warehouse doesn't stock it
 const stock: Record<string, Record<string, number>> = {
   EAST: { "SKU-001": 50, "SKU-002": 50, "SKU-003": 10, "SKU-004": 2 },
   CENTRAL: { "SKU-001": 50, "SKU-002": 50, "SKU-003": 50, "SKU-004": 2, "SKU-005": 20 },
@@ -42,13 +38,11 @@ const inventory = warehouses.flatMap((w) =>
 );
 
 async function main() {
-  // Delete and recreate instead of upsert: an upsert keeps an existing row's old cuid,
-  // and a primary key can't be changed in place. One transaction, so a failed seed changes nothing.
+  // Delete and recreate, not upsert: an upsert would keep an existing row's old id
   const deletedOrders = await prisma.$transaction(
     async (tx) => {
-      // Orders first (OrderItem rows cascade): they reference customers, products and warehouses
+      // Orders first: they reference everything else
       const { count } = await tx.order.deleteMany();
-      // Inventory rows cascade from warehouses and products
       await tx.customer.deleteMany();
       await tx.product.deleteMany();
       await tx.warehouse.deleteMany();

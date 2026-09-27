@@ -1,15 +1,7 @@
-import type { Coordinates } from "./geo.ts";
-import type { CreateOrderInput } from "./schemas.ts";
+import type { Coordinates } from "../../lib/geo.ts";
+import type { Geocoder } from "./geocoder.provider.ts";
 
-type Address = CreateOrderInput["shippingAddress"];
-
-// D15: the route depends on this interface, so a real provider can replace the mock
-export interface Geocoder {
-  // null = the address can't be located; the route answers 422
-  geocode(address: Address): Promise<Coordinates | null>;
-}
-
-// US postal code → coordinates. Picked so each warehouse is the closest for some address
+// Each warehouse is the closest one for at least one of these
 const KNOWN_POSTAL_CODES: Record<string, Coordinates> = {
   "10118": { lat: 40.7484, lng: -73.9857 }, // New York, NY → EAST
   "02108": { lat: 42.3576, lng: -71.0636 }, // Boston, MA → EAST

@@ -1,13 +1,14 @@
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
-import { prisma } from "./db.ts";
-import { OutOfStock } from "./errors.ts";
-import { type Order, type OrderStatus, Prisma } from "./generated/prisma/client.ts";
-import { mockGeocoder } from "./geocoder.ts";
-import { hashRequest } from "./hash.ts";
-import { type ChargeResult, isTestCard, mockPaymentProvider } from "./payment.ts";
-import { CreateOrderBody, IdempotencyKey } from "./schemas.ts";
-import { rankWarehouses } from "./warehouse.ts";
+import { type Order, type OrderStatus, Prisma } from "../../generated/prisma/client.ts";
+import { prisma } from "../db.ts";
+import { hashRequest } from "../lib/hash.ts";
+import { geocoder, paymentProvider } from "../providers/index.ts";
+import { isTestCard } from "../providers/payment/payment.mock.ts";
+import type { ChargeResult } from "../providers/payment/payment.provider.ts";
+import { rankWarehouses } from "../warehouses/warehouses.ranking.ts";
+import { OutOfStock } from "./orders.errors.ts";
+import { CreateOrderBody, IdempotencyKey } from "./orders.schemas.ts";
 
 const replayStatusCode: Record<OrderStatus, number> = {
   PAID: 201,
@@ -113,7 +114,7 @@ export async function orderRoutes(fastify: FastifyInstance) {
 
     const totalCents = orderItems.reduce((sum, item) => sum + item.quantity * item.unitPriceCents, 0);
 
-    const dest = await mockGeocoder.geocode(parsedBody.data.shippingAddress);
+    const dest = await geocoder.geocode(parsedBody.data.shippingAddress);
     if (!dest) {
       return reply.code(422).send({
         error: { code: "ADDRESS_NOT_FOUND", message: "Could not locate the shipping address" },
@@ -180,7 +181,7 @@ export async function orderRoutes(fastify: FastifyInstance) {
     // After this call money may have moved, so a failure means "unknown" (202), never an error
     let payment: ChargeResult;
     try {
-      payment = await mockPaymentProvider.charge({
+      payment = await paymentProvider.charge({
         cardNumber,
         amountCents: totalCents,
         description: `Order ${order.id}`,
