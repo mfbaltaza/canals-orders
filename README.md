@@ -28,6 +28,9 @@ npm run dev               # http://localhost:3000
 | `HOST` | no | `127.0.0.1` | Set `0.0.0.0` in containers and on the host |
 | `PORT` | no | `3000` | |
 | `LOG_LEVEL` | no | `info` | |
+| `RATE_LIMIT_MAX` | no | `10` in production, else off | Requests per minute per IP on `POST /orders`; `0` turns it off |
+| `TRUST_PROXY` | no | `true` in production, else `false` | Take the client IP from `X-Forwarded-For`; only behind a trusted proxy |
+| `CORS_ORIGINS` | no | none | Comma-separated browser origins allowed to call the API |
 
 ## Try it
 
@@ -128,6 +131,7 @@ The geocoder is a mock that knows a handful of US postal codes: `10118` and `021
 | Unknown customer | `404` | error |
 | No single warehouse has every item | `409` | error |
 | Address can't be geocoded | `422` | error |
+| Too many orders from one IP (see `RATE_LIMIT_MAX`) | `429` + `Retry-After` | error; nothing written, retry after that many seconds |
 | Database busy (no transaction within 2 s) | `503` + `Retry-After: 1` | error; nothing written, retry with the same key |
 | Anything unexpected | `500` | generic error, details only in the server log |
 

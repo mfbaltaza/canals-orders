@@ -2,6 +2,7 @@ import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import { type Order, type OrderStatus, Prisma } from "../../generated/prisma/client.ts";
 import { prisma } from "../db.ts";
+import { env } from "../env.ts";
 import { hashRequest } from "../lib/hash.ts";
 import { geocoder, paymentProvider } from "../providers/index.ts";
 import { isTestCard } from "../providers/payment/payment.mock.ts";
@@ -21,8 +22,12 @@ const outOfStockError = {
   error: { code: "OUT_OF_STOCK", message: "No warehouse has enough stock for every item" },
 };
 
+const createOrderOptions = {
+  config: { rateLimit: { max: env.RATE_LIMIT_MAX, timeWindow: "1 minute" } },
+};
+
 export async function orderRoutes(fastify: FastifyInstance) {
-  fastify.post("/orders", async (req, reply) => {
+  fastify.post("/orders", createOrderOptions, async (req, reply) => {
     const parsedIdempotencyKey = IdempotencyKey.safeParse(req.headers["idempotency-key"]);
     if (!parsedIdempotencyKey.success) {
       return reply.code(400).send({

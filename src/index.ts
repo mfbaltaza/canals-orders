@@ -1,9 +1,12 @@
+import cors from "@fastify/cors";
+import rateLimit from "@fastify/rate-limit";
 import Fastify, { type FastifyError } from "fastify";
 import { Prisma } from "../generated/prisma/client.ts";
 import { env } from "./env.ts";
 import { orderRoutes } from "./orders/orders.routes.ts";
 
 const fastify = Fastify({
+  trustProxy: env.TRUST_PROXY,
   logger: {
     level: env.LOG_LEVEL,
     redact: {
@@ -27,6 +30,27 @@ fastify.setErrorHandler<FastifyError>((err, req, reply) => {
   req.log.error({ err }, "unhandled error");
   return reply.code(500).send({ error: { code: "INTERNAL_ERROR", message: "Something went wrong" } });
 });
+
+fastify.register(cors, {
+  origin: env.CORS_ORIGINS,
+  methods: ["GET", "POST"],
+  allowedHeaders: ["Content-Type", "Idempotency-Key"],
+  exposedHeaders: ["Retry-After", "Request-Id"],
+});
+
+if (env.RATE_LIMIT_MAX > 0) {
+  const noQuotaHeaders = { "x-ratelimit-limit": false, "x-ratelimit-remaining": false, "x-ratelimit-reset": false };
+  fastify.register(rateLimit, {
+    global: false,
+    addHeadersOnExceeding: noQuotaHeaders,
+    addHeaders: noQuotaHeaders,
+    errorResponseBuilder: (_req, context) => ({
+      statusCode: 429,
+      code: "RATE_LIMIT",
+      message: `Too many requests, retry in ${context.after}`,
+    }),
+  });
+}
 
 fastify.register(orderRoutes);
 
