@@ -26,6 +26,17 @@ const createOrderOptions = {
   config: { rateLimit: { max: env.RATE_LIMIT_MAX, timeWindow: "1 minute" } },
 };
 
+function attemptOutcome(payment: ChargeResult): Prisma.PaymentAttemptUpdateInput {
+  switch (payment.status) {
+    case "approved":
+      return { status: "APPROVED", reference: payment.reference };
+    case "declined":
+      return { status: "DECLINED", declineReason: payment.reason };
+    case "unknown":
+      return { status: "UNKNOWN" };
+  }
+}
+
 export async function orderRoutes(fastify: FastifyInstance) {
   fastify.post("/orders", createOrderOptions, async (req, reply) => {
     const parsedIdempotencyKey = IdempotencyKey.safeParse(req.headers["idempotency-key"]);
@@ -185,6 +196,11 @@ export async function orderRoutes(fastify: FastifyInstance) {
       return reply.code(409).send(outOfStockError);
     }
 
+    // Written before charging, so a crash mid-call still leaves a PENDING attempt
+    const attempt = await prisma.paymentAttempt.create({
+      data: { orderId: order.id, amountCents: totalCents },
+    });
+
     // After this call money may have moved, so a failure means "unknown" (202), never an error
     let payment: ChargeResult;
     try {
@@ -196,6 +212,13 @@ export async function orderRoutes(fastify: FastifyInstance) {
     } catch (err) {
       req.log.error({ err, orderId: order.id }, "charge threw, outcome unknown");
       payment = { status: "unknown" };
+    }
+
+    // Outside the order transactions, so a rollback can't erase the provider's answer
+    try {
+      await prisma.paymentAttempt.update({ where: { id: attempt.id }, data: attemptOutcome(payment) });
+    } catch (err) {
+      req.log.error({ err, attemptId: attempt.id, payment }, "could not record payment attempt outcome");
     }
 
     if (payment.status === "approved") {

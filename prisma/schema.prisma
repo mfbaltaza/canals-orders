@@ -53,22 +53,23 @@ enum OrderStatus {
 }
 
 model Order {
-  id                     String      @id @default(cuid())
+  id                     String           @id @default(cuid())
   customerId             String
   warehouseId            String
   totalCents             Int
-  status                 OrderStatus @default(PENDING_PAYMENT)
+  status                 OrderStatus      @default(PENDING_PAYMENT)
   idempotencyKey         String
   idempotencyRequestHash String
   shippingAddress        Json
   shippingLat            Float
   shippingLng            Float
-  paymentReference       String?     @unique
-  createdAt              DateTime    @default(now())
-  updatedAt              DateTime    @updatedAt
-  customer               Customer    @relation(fields: [customerId], references: [id])
-  warehouse              Warehouse   @relation(fields: [warehouseId], references: [id], onDelete: Restrict)
+  paymentReference       String?          @unique
+  createdAt              DateTime         @default(now())
+  updatedAt              DateTime         @updatedAt
+  customer               Customer         @relation(fields: [customerId], references: [id])
+  warehouse              Warehouse        @relation(fields: [warehouseId], references: [id], onDelete: Restrict)
   items                  OrderItem[]
+  paymentAttempts        PaymentAttempt[]
 
   // Leading customerId column also serves "orders by customer" lookups
   @@unique([customerId, idempotencyKey])
@@ -88,4 +89,25 @@ model OrderItem {
   // Leading orderId column also serves "items of an order" lookups
   @@unique([orderId, productId])
   @@index([productId])
+}
+
+enum PaymentAttemptStatus {
+  PENDING
+  APPROVED
+  DECLINED
+  UNKNOWN
+}
+
+model PaymentAttempt {
+  id            String               @id @default(cuid())
+  orderId       String
+  amountCents   Int
+  status        PaymentAttemptStatus @default(PENDING)
+  declineReason String?
+  reference     String?              @unique
+  createdAt     DateTime             @default(now())
+  updatedAt     DateTime             @updatedAt
+  order         Order                @relation(fields: [orderId], references: [id], onDelete: Cascade)
+
+  @@index([orderId])
 }

@@ -10,6 +10,9 @@ export type ChargeResult =
   // Timeout or lost response: the card may have been charged, so never treat this as declined
   | { status: "unknown" };
 
+export type FoundCharge = { reference: string };
+
 export interface PaymentProvider {
   charge(request: ChargeRequest): Promise<ChargeResult>;
+  findChargeByDescription(description: string): Promise<FoundCharge | null>;
 }

@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import type { PaymentProvider } from "./payment.provider.ts";
 
 // The demo is public, so only these numbers are accepted: the form must never invite a real card
@@ -24,5 +25,12 @@ export const mockPaymentProvider: PaymentProvider = {
       default:
         return { status: "approved", reference: `ch_mock_${crypto.randomUUID()}` };
     }
+  },
+
+  // No record of charges here, so the description decides: same order, same answer
+  async findChargeByDescription(description) {
+    const digest = createHash("sha256").update(description).digest();
+    if (digest.readUInt8(0) % 2 === 1) return null;
+    return { reference: `ch_mock_${digest.toString("hex").slice(0, 32)}` };
   },
 };
