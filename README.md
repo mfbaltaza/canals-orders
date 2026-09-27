@@ -4,7 +4,7 @@
 
 **Live:** https://canals-orders-production.up.railway.app
 
-Stack: Node 24+ (runs `.ts` directly), Fastify 5, Prisma 7, Postgres, Zod 4.
+Stack: Node ≥ 22.18 (runs `.ts` directly), Fastify 5, Prisma 7, Postgres, Zod 4.
 
 ## Quick start
 
@@ -31,27 +31,52 @@ npm run dev               # http://localhost:3000
 
 ## Try it
 
-Ids are cuids, so look them up first (`npm run db:studio`, or the `Customer` / `Product` tables). The seed's fixtures:
-
-| Customers | Products | Warehouses |
-|---|---|---|
-| `juan@example.com`, `maricel@example.com` | `SKU-001` … `SKU-005` ($10 … $50) | `EAST` (New York), `CENTRAL` (Chicago), `WEST` (Los Angeles) |
-
-Stock is deliberately uneven: `EAST` has no `SKU-005`, and each warehouse holds only 2 × `SKU-004`, which makes stock-outs and the fallback easy to see.
+Against the live service, or `http://localhost:3000` after the quick start:
 
 ```bash
-curl -i http://localhost:3000/orders \
+BASE=https://canals-orders-production.up.railway.app
+KEY=$(uuidgen)   # one key per checkout attempt; reuse it to retry
+```
+
+No `uuidgen` any unique string of 1–255 characters works: `KEY=test-1`, then `test-2`.
+
+**1. Place an order.** Juan orders one `prod_001`, shipped to New York:
+
+```bash
+curl -i $BASE/orders \
   -H 'content-type: application/json' \
-  -H "idempotency-key: $(uuidgen)" \
+  -H "idempotency-key: $KEY" \
   -d '{
-    "customerId": "<juan id>",
+    "customerId": "cus_juan",
     "shippingAddress": { "line1": "350 5th Ave", "city": "New York", "region": "NY", "postalCode": "10118", "country": "US" },
-    "items": [{ "productId": "<SKU-001 id>", "quantity": 1 }],
+    "items": [{ "productId": "prod_001", "quantity": 1 }],
     "payment": { "cardNumber": "4242424242424242" }
   }'
 ```
 
-Send the same request you should get the same order back nothing is charged twice.
+→ `201`, `"status": "PAID"`, `"warehouseId": "wh_east"` (the nearest warehouse with stock).
+
+**2. Retry it.** Run the same command again, with the same `$KEY`: → `201` with the **same order `id`**. The card isn't charged again and stock isn't taken twice.
+
+**3. Vary one thing** (with a new `KEY=$(uuidgen)` each time):
+
+| Change | Result | Why |
+|---|---|---|
+| `"items": [{ "productId": "prod_005", "quantity": 1 }]` | `201`, `wh_central` | `wh_east` doesn't stock `prod_005`, so the next-closest warehouse ships it |
+| `"postalCode": "90012"` (Los Angeles) | `201`, `wh_west` | nearest warehouse |
+| `"items": [{ "productId": "prod_004", "quantity": 3 }]` | `409 OUT_OF_STOCK` | every warehouse holds only 2 |
+| `"cardNumber": "4000000000000002"` | `402`, `PAYMENT_FAILED` | declined; the reserved stock is released |
+| `"postalCode": "99999"` | `422 ADDRESS_NOT_FOUND` | the geocoder can't place it |
+
+### Seed data
+
+`npm run db:seed` resets everything to these fixtures and deletes all orders:
+
+| Customers | Products | Warehouses |
+|---|---|---|
+| `cus_juan`, `cus_maricel` | `prod_001` … `prod_005` ($10 … $50) | `wh_east` (New York), `wh_central` (Chicago), `wh_west` (Los Angeles) |
+
+Stock is deliberately uneven: `wh_east` has no `prod_005`, and each warehouse holds only 2 × `prod_004`, so stock-outs and the fallback are easy to see.
 
 ### Test cards
 
@@ -65,7 +90,7 @@ The payment mock only accepts these. Any other number gets `400` before any stoc
 
 ### Addresses
 
-The geocoder is a mock that knows a handful of US postal codes: `10118` and `02108` (nearest: EAST), `60601` (CENTRAL), `80202`, `90012` and `98101` (WEST). Anything else → `422`.
+The geocoder is a mock that knows a handful of US postal codes: `10118` and `02108` (nearest: `wh_east`), `60601` (`wh_central`), `80202`, `90012` and `98101` (`wh_west`). Anything else → `422`.
 
 ## API
 
@@ -89,6 +114,8 @@ The geocoder is a mock that knows a handful of US postal codes: `10118` and `021
 Every error has one shape: `{ "error": { "code": "OUT_OF_STOCK", "message": "…", "details": … } }`.
 
 ## How it works
+
+## Decisions
 
 ## Checks
 

@@ -1,14 +1,16 @@
 import { z } from "zod";
 
-const Id = z.string().trim().min(1);
-export const IdempotencyKey = Id.max(255);
+// Every string has an upper bound: without one, a 1 MB field passes validation and gets stored
+const NonEmpty = z.string().trim().min(1);
+const Id = NonEmpty.max(64);
+export const IdempotencyKey = NonEmpty.max(255);
 
 export const ShippingAddress = z.object({
-  line1: z.string().trim().min(1),
-  line2: z.string().trim().min(1).optional(),
-  city: z.string().trim().min(1),
-  region: z.string().trim().min(1),
-  postalCode: z.string().trim().min(1),
+  line1: NonEmpty.max(200),
+  line2: NonEmpty.max(200).optional(),
+  city: NonEmpty.max(100),
+  region: NonEmpty.max(100),
+  postalCode: NonEmpty.max(20),
   // ISO 3166-1 alpha-2, e.g. "US"
   country: z
     .string()
