@@ -31,6 +31,7 @@ npm run dev               # http://localhost:3000
 | `RATE_LIMIT_MAX` | no | `10` in production, else off | Requests per minute per IP on `POST /orders`; `0` turns it off |
 | `TRUST_PROXY` | no | `true` in production, else `false` | Take the client IP from `X-Forwarded-For`; only behind a trusted proxy |
 | `CORS_ORIGINS` | no | none | Comma-separated browser origins allowed to call the API |
+| `GEOCODER_TIMEOUT_MS` | no | `2000` | After this, the order gets `503 GEOCODER_UNAVAILABLE` |
 
 ## Try it
 
@@ -113,7 +114,9 @@ The payment mock only accepts these. Any other number gets `400` before any stoc
 
 ### Addresses
 
-The geocoder is a mock that knows a handful of US postal codes: `10118` and `02108` (nearest: `wh_east`), `60601` (`wh_central`), `80202`, `90012` and `98101` (`wh_west`). Anything else → `422`.
+The geocoder is a mock. These US postal codes resolve to their real location: `10118` and `02108` (nearest: `wh_east`), `60601` (`wh_central`), `80202`, `90012` and `98101` (`wh_west`). Any other US ZIP resolves to the rough center of its region by first digit (`0`–`2` → `wh_east`, `3`–`7` → `wh_central`, `8`–`9` → `wh_west`), so your own address works. Non-US addresses and ZIPs USPS doesn't assign (like `99999`) → `422`.
+
+Like the test cards, two postal codes make the mock misbehave: `00408` never answers (the request times out) and `00503` fails. Both return `503 GEOCODER_UNAVAILABLE`.
 
 ## API
 
@@ -133,9 +136,12 @@ The geocoder is a mock that knows a handful of US postal codes: `10118` and `021
 | Address can't be geocoded | `422` | error |
 | Too many orders from one IP (see `RATE_LIMIT_MAX`) | `429` + `Retry-After` | error; nothing written, retry after that many seconds |
 | Database busy (no transaction within 2 s) | `503` + `Retry-After: 1` | error; nothing written, retry with the same key |
+| Geocoder timed out or failed | `503` + `Retry-After: 1` | error; nothing written, retry with the same key |
 | Anything unexpected | `500` | generic error, details only in the server log |
 
-Every error has one shape: `{ "error": { "code": "OUT_OF_STOCK", "message": "…", "details": … } }`.
+Every error has one shape: `{ "error": { "code": "OUT_OF_STOCK", "message": "…", "details": … } }`. Every response carries a `Request-Id` header that matches the server's log lines.
+
+`GET /healthz` returns `200 { "status": "ok" }` when the database answers, `503` otherwise.
 
 ## How it works
 
@@ -162,9 +168,11 @@ npm run typecheck && npm run lint
 
 ```
 src/
-  index.ts                      Fastify bootstrap, app-wide error handler
+  index.ts                      Fastify bootstrap, CORS, rate limit, error handler, graceful shutdown
   env.ts                        Validated environment
   db.ts                         Prisma client
+  health/
+    health.routes.ts            GET /healthz
   orders/
     orders.routes.ts            POST /orders, top to bottom
     orders.schemas.ts           Zod request schemas
@@ -178,10 +186,12 @@ src/
       payment.mock.ts           Mock + test cards
     geocoder/
       geocoder.provider.ts      Geocoder interface
-      geocoder.mock.ts          Mock (known US postal codes)
+      geocoder.mock.ts          Mock (any US ZIP) + test postal codes
+      geocoder.resilience.ts    Timeout and cache around any geocoder
   lib/
     geo.ts                      Haversine distance
     hash.ts                     Request hash stored with the idempotency key
-prisma/                         Schema, migrations (hand-written CHECK constraint), seed
+prisma/                         Schema, migrations (hand-written CHECK constraints), seed
 scripts/concurrency.ts          Parallel-orders proof: no overselling, one order per idempotency key
+docker/Dockerfile               App image (used by docker-compose.yml)
 ```
