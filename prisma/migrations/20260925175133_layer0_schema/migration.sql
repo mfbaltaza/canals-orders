@@ -46,6 +46,6 @@ ALTER TABLE "Order" ADD CONSTRAINT "Order_warehouseId_fkey" FOREIGN KEY ("wareho
 
 
 -- Hand-written: Prisma's schema language can't express CHECK constraints.
--- The database is the last guard against overselling (D6), whatever the app code does.
+-- The database is the last guard against overselling, whatever the app code does.
 ALTER TABLE "Inventory" ADD CONSTRAINT "inventory_quantity_nonnegative" CHECK ("quantity" >= 0);
 ALTER TABLE "OrderItem" ADD CONSTRAINT "orderitem_quantity_positive" CHECK ("quantity" > 0);
