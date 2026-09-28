@@ -9,6 +9,7 @@ node_modules
 
 /docs
 
-# Dev-only testing: kept locally
+# Dev-only testing: kept locally (concurrency.ts ships: it proves no overselling)
 TESTING.md
-/scripts
+/scripts/*
+!/scripts/concurrency.ts
