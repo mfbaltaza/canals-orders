@@ -2,7 +2,8 @@
 
 `POST /orders` for an order management API.
 
-**Live:** https://canals-orders-production.up.railway.app
+**Live:** https://canals-orders-production.up.railway.app  
+**Test it over!** https://canals-orders-demo.netlify.app/
 
 Stack: Node ≥ 22.18 (runs `.ts` directly), Fastify 5, Prisma 7, Postgres, Zod 4.
 
