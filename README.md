@@ -1,6 +1,6 @@
 # canals-orders
 
-We are building a `POST /orders` for an order management API.
+`POST /orders` for an order management API.
 
 **Live:** https://canals-orders-production.up.railway.app  
 **Test it over!** https://canals-orders-demo.netlify.app/
@@ -95,11 +95,12 @@ Stock is deliberately uneven: `wh_east` has no `prod_005`, and each warehouse ho
 
 The payment mock only accepts these. Any other number gets `400` before any stock is touched, so the public demo never invites a real card.
 
-| Card               | Outcome                                                                |
-| ------------------ | ---------------------------------------------------------------------- |
-| `4242424242424242` | approved → `201 PAID`                                                  |
-| `4000000000000002` | declined → `402 PAYMENT_FAILED`, stock released                        |
-| `4000000000000119` | outcome unknown (timeout) → `202 PENDING_PAYMENT`, stock kept reserved |
+| Card               | Outcome                                                                                                                 |
+| ------------------ | ----------------------------------------------------------------------------------------------------------------------- |
+| `4242424242424242` | approved → `201 PAID`                                                                                                   |
+| `4000000000000002` | declined → `402 PAYMENT_FAILED`, stock released                                                                         |
+| `4000000000000119` | outcome unknown → `202 PENDING_PAYMENT`, stock kept reserved until the sweeper resolves it                              |
+| `4000000000009999` | no answer within `PAYMENT_TIMEOUT_MS` (10 s) → `202 PENDING_PAYMENT`, stock kept reserved until the sweeper resolves it |
 
 ### Addresses
 
@@ -116,33 +117,36 @@ Like the test cards, two postal codes make the mock misbehave: `00408` never ans
 5. We check that the card is one of the documented test cards. If it isn't, we reject it with a 400.
 6. We look up the customer. If they don't exist, we return a 404.
 7. We look up the products. If any of them is unknown, we reject the request with a 400.
-8. We price every item from the database, we could never trust the client, sort the items by product, and add up the total in cents.
+8. We price every item from the database (never from the client), sort the items by product, and add up the total in cents.
 9. We geocode the shipping address by using our mock service. If we can't find it, we return a 422.
-10. We rank the warehouses that have every item, closest first. If none has stock, we check whether if an earlier perhaps duplicate request with the same key took it; if so we return that order, otherwise a 409.
+10. We rank the warehouses that have every item, closest first. If none has stock, we check whether an earlier, possibly duplicate request with the same key took it; if so we return that order, otherwise a 409.
 11. We try each warehouse in turn. In one transaction we take every item with a conditional decrement and create the order as `PENDING_PAYMENT`. If an item runs short, the transaction rolls back and we try the next warehouse. If a request with the same key committed first, we return its order. If every warehouse runs short, it's a 409.
-12. With the stock reserved and committed, we charge the card for the total, with the order id as the description.
+12. With the stock reserved and committed, we charge the card for the total, with the order id as the description. We stop waiting after `PAYMENT_TIMEOUT_MS`.
 13. Approved: we mark the order `PAID` and return 201. If saving that fails, we return 202, because the money has moved.
 14. Declined: in one transaction we mark the order `PAYMENT_FAILED` and put the stock back, then return 402.
 15. Unknown (the call timed out or failed): we leave the order `PENDING_PAYMENT` with its stock reserved and return 202.
 
+**Stuck orders.** Every minute, a sweeper inside the app looks for orders that have been `PENDING_PAYMENT` for over 10 minutes: the request crashed, or the provider never answered. It decides from the order's latest payment attempt: none → `EXPIRED`, approved → `PAID`, declined → `PAYMENT_FAILED`, unknown → it asks the provider for the charge by its description. Whenever the order doesn't end up `PAID`, its stock goes back in the same transaction. `npm run sweep` runs one pass by hand.
+
 ## Decisions
 
-- **The `Idempotency-Key` is required and unique per customer.** A repeated request maps to the order it already created, so nothing is charged twice. It's per customer, not global, because another customer could send the same key and get someone else's order back.
+- **`Idempotency-Key` this is required and must be unique per request.** A repeated request maps to the previous order, so nothing is charged twice. We check this per customer, not globally, because another customer could send the same key and get someone else's order back.
 
-- **We charge the card after the reservation commits, never inside the transaction.** A database write can be rolled back; a card charge can't. Committing first also frees the stock row right away, so when those were the last units, other orders go to a warehouse that has stock instead of waiting on a lock. Revisit: never.
+- **We charge the card outside the transaction.** It is way easier to roll back a database write; a card charge can't be rolled back quite as easily. Committing first frees the stock row right away, so when dealing with the last units, other orders can go to a warehouse that has stock straight away instead of waiting on a lock. I would revisit only if the provider supports authorize-then-capture inside our flow.
 
 - **If a warehouse can't fill the order, it falls back to the next closest.** Between ranking the warehouses and reserving, the stock can change. This would need revisiting if one order may ship from several warehouses.
 
 - **Money is integer cents, and each order item keeps a copy of its price.** Cents avoid floating-point rounding. The copy means that if a price changes later, the order still shows what the customer paid. We would need to revisit this when an order could pass $21.4M, the `INTEGER` limit, which would need a `BigInt` column.
 
-- **Fastify + Postgres + Prisma.** For the assignmnet I decided to go with this stack because Fastify provides a quick way to start a node project which is in line with the stack used at Canals. Also due to the assignment requiring the use of a real database, we went with Postgres + Prisma to take advantage of the typing and schema parsing abilities it provides. This stack proves really helpful when developing manually or with AI.
+- **Fastify + Postgres + Prisma.** For the assignment I decided to go with this stack because Fastify provides a quick way to start a node project which is in line with the stack used at Canals. Also due to the assignment requiring the use of a real database, we went with Postgres + Prisma to take advantage of the typing and schema parsing abilities it provides.
 
 - **Synchronous, not a queue + worker.** It's simpler, fits the assignment, and has fewer points of failure. The customer gets the final answer in one round trip. It stays correct under load, and retries are safe. I would revisit this selection for heavy traffic spikes, or a payment provider slow enough that checkout waits too long.
 
-- **Stock is reserved with a conditional decrement.**
-  It prevents oversells. The formula and the check run in one statement, so Postgres re-reads the quantity at the moment of the write. If someone bought just before us, we update from their result, not from a stale read. We do this instead of read → check → write, which can sell items we don't have, and fails silently when requests overlap. Revisit: When a product's stock no longer fits in one row per warehouse (for example, split across shelves, or across buckets to speed up a hot SKU), so a check has to add up several rows. Then we'd need row locks (`SELECT … FOR UPDATE`) or `SERIALIZABLE`. `SET quantity = quantity - wanted WHERE quantity >= wanted`
+- **Stock is reserved with a conditional decrement: `SET quantity = quantity - wanted WHERE quantity >= wanted`.** This helps us prevents oversells. The formula and the check run in one statement, so Postgres re-reads the quantity at the moment of the write. If someone bought just before us, we would update from their result, not from a stale read. We do this instead of read -> check -> write, which can sell items we don't have, and fails silently when requests overlap. I would revisit this when a product's stock no longer fits in one row per warehouse (for example, split across shelves, or across buckets to speed up a hot SKU), because then we will need to add up several rows. Then we'd need row locks (`SELECT … FOR UPDATE`) or `SERIALIZABLE`.
 
-- **An unknown payment outcome keeps the stock reserved.** After a timeout we might have charged the customer and just don't know yet, so the order stays `PENDING_PAYMENT` (`202`) with its stock reserved until it's reconciled (a sweeper is planned). Revisit with a real payment provider: use its tools, such as webhooks, to reconcile.
+- **An unknown payment outcome keeps the stock reserved, and a sweeper resolves it.** After a timeout we might have charged the customer and just don't know yet, so the order stays `PENDING_PAYMENT` (`202`) with its stock reserved. The sweeper trusts our own payment record first and asks the provider only when the outcome is unknown: charged → `PAID`, not charged → `EXPIRED` and the stock goes back. Every close is guarded by `status = PENDING_PAYMENT`, in the same transaction as the stock release, so running it twice or on two instances never releases stock twice. Revisit with a real payment provider: use its webhooks, and cancel or void the charge before expiring an order, since it could still settle after we looked.
+
+- **The payment call times out after 10 seconds, and a timeout means "unknown".** It never becomes a decline and the charge is never retried, because the card may already be charged. The timeout also keeps the sweeper safe: it only looks at orders older than the timeout plus a minute, so it never decides while a charge is still in flight. When I would revisit? when using a real provider, send an idempotency key with the charge so a retry becomes safe.
 
 ## Checks
 
@@ -163,6 +167,8 @@ src/
     orders.routes.ts            POST /orders, top to bottom
     orders.schemas.ts           Zod request schemas
     orders.errors.ts            Domain errors
+    orders.charge.ts            Charge description, shared by the route and the sweeper
+    orders.sweep.ts             Sweeper for orders stuck in PENDING_PAYMENT, runs on a timer
   warehouses/
     warehouses.ranking.ts       Distance ranking of candidate warehouses
   providers/
@@ -170,6 +176,7 @@ src/
     payment/
       payment.provider.ts       PaymentProvider interface
       payment.mock.ts           Mock + test cards
+      payment.resilience.ts     Timeout around any payment provider
     geocoder/
       geocoder.provider.ts      Geocoder interface
       geocoder.mock.ts          Mock (any US ZIP) + test postal codes
@@ -177,21 +184,26 @@ src/
   lib/
     geo.ts                      Haversine distance
     hash.ts                     Request hash stored with the idempotency key
+    abort.ts                    Reject when an AbortSignal fires
 prisma/                         Schema, migrations (hand-written CHECK constraints), seed
 scripts/concurrency.ts          Parallel-orders proof: no overselling, one order per idempotency key
+scripts/sweep.ts                One sweeper pass by hand
 docker/Dockerfile               App image (used by docker-compose.yml)
 ```
 
 ### Environment
 
-| Variable              | Required           | Default                            | Notes                                                                  |
-| --------------------- | ------------------ | ---------------------------------- | ---------------------------------------------------------------------- |
-| `DATABASE_URL`        | yes                | —                                  | Pooled URL on hosts like Neon; validated at boot (`src/env.ts`)        |
-| `DIRECT_URL`          | only with a pooler | `DATABASE_URL`                     | Non-pooled URL, used by migrations                                     |
-| `HOST`                | no                 | `127.0.0.1`                        | Set `0.0.0.0` in containers and on the host                            |
-| `PORT`                | no                 | `3000`                             |                                                                        |
-| `LOG_LEVEL`           | no                 | `info`                             |                                                                        |
-| `RATE_LIMIT_MAX`      | no                 | `10` in production, else off       | Requests per minute per IP on `POST /orders`; `0` turns it off         |
-| `TRUST_PROXY`         | no                 | `true` in production, else `false` | Take the client IP from `X-Forwarded-For`; only behind a trusted proxy |
-| `CORS_ORIGINS`        | no                 | none                               | Comma-separated browser origins allowed to call the API                |
-| `GEOCODER_TIMEOUT_MS` | no                 | `2000`                             | After this, the order gets `503 GEOCODER_UNAVAILABLE`                  |
+| Variable               | Required           | Default                            | Notes                                                                                                           |
+| ---------------------- | ------------------ | ---------------------------------- | --------------------------------------------------------------------------------------------------------------- |
+| `DATABASE_URL`         | yes                | —                                  | Pooled URL on hosts like Neon; validated at boot (`src/env.ts`)                                                 |
+| `DIRECT_URL`           | only with a pooler | `DATABASE_URL`                     | Non-pooled URL, used by migrations                                                                              |
+| `HOST`                 | no                 | `127.0.0.1`                        | Set `0.0.0.0` in containers and on the host                                                                     |
+| `PORT`                 | no                 | `3000`                             |                                                                                                                 |
+| `LOG_LEVEL`            | no                 | `info`                             |                                                                                                                 |
+| `RATE_LIMIT_MAX`       | no                 | `10` in production, else off       | Requests per minute per IP on `POST /orders`; `0` turns it off                                                  |
+| `TRUST_PROXY`          | no                 | `true` in production, else `false` | Take the client IP from `X-Forwarded-For`; only behind a trusted proxy                                          |
+| `CORS_ORIGINS`         | no                 | none                               | Comma-separated browser origins allowed to call the API                                                         |
+| `GEOCODER_TIMEOUT_MS`  | no                 | `2000`                             | After this, the order gets `503 GEOCODER_UNAVAILABLE`                                                           |
+| `PAYMENT_TIMEOUT_MS`   | no                 | `10000`                            | After this, the charge counts as unknown: `202 PENDING_PAYMENT`, never declined, never retried                  |
+| `SWEEP_INTERVAL_MS`    | no                 | `60000`                            | How often the sweeper runs; `0` turns it off (`npm run sweep` runs one pass by hand)                            |
+| `SWEEP_STALE_AFTER_MS` | no                 | `600000`                           | Only orders pending for longer are swept. Must be at least `PAYMENT_TIMEOUT_MS` + 60000, or the app won't start |
