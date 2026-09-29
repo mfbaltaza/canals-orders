@@ -1,3 +1,4 @@
+import { rejectOnAbort } from "../../lib/abort.ts";
 import type { Coordinates } from "../../lib/geo.ts";
 import { type Address, type Geocoder, GeocoderUnavailable } from "./geocoder.provider.ts";
 
@@ -15,12 +16,6 @@ export function withTimeout(inner: Geocoder, timeoutMs: number): Geocoder {
       }
     },
   };
-}
-
-function rejectOnAbort(signal: AbortSignal): Promise<never> {
-  return new Promise((_, reject) => {
-    signal.addEventListener("abort", () => reject(signal.reason), { once: true });
-  });
 }
 
 type CacheOptions = {

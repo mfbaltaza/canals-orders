@@ -13,3 +13,4 @@ node_modules
 TESTING.md
 /scripts/*
 !/scripts/concurrency.ts
+!/scripts/sweep.ts

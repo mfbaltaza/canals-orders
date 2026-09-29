@@ -7,7 +7,9 @@ import { hashRequest } from "../lib/hash.ts";
 import { geocoder, paymentProvider } from "../providers/index.ts";
 import { isTestCard } from "../providers/payment/payment.mock.ts";
 import type { ChargeResult } from "../providers/payment/payment.provider.ts";
+import { ChargeTimedOut } from "../providers/payment/payment.resilience.ts";
 import { rankWarehouses } from "../warehouses/warehouses.ranking.ts";
+import { chargeDescription } from "./orders.charge.ts";
 import { OutOfStock } from "./orders.errors.ts";
 import { CreateOrderBody, IdempotencyKey } from "./orders.schemas.ts";
 
@@ -207,10 +209,11 @@ export async function orderRoutes(fastify: FastifyInstance) {
       payment = await paymentProvider.charge({
         cardNumber,
         amountCents: totalCents,
-        description: `Order ${order.id}`,
+        description: chargeDescription(order.id),
       });
     } catch (err) {
-      req.log.error({ err, orderId: order.id }, "charge threw, outcome unknown");
+      const what = err instanceof ChargeTimedOut ? "charge timed out" : "charge threw";
+      req.log.error({ err, orderId: order.id }, `${what}, outcome unknown`);
       payment = { status: "unknown" };
     }
 
