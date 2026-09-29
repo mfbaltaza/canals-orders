@@ -201,7 +201,7 @@ export async function orderRoutes(fastify: FastifyInstance) {
       data: { orderId: order.id, amountCents: totalCents },
     });
 
-    // After this call money may have moved, so a failure means "unknown" (202), never an error
+    // After this call money may have moved, so a failure means "unknown" (202), not an error
     let payment: ChargeResult;
     try {
       payment = await paymentProvider.charge({

@@ -80,8 +80,16 @@ if (env.RATE_LIMIT_MAX > 0) {
 fastify.register(healthRoutes);
 fastify.register(orderRoutes);
 
-fastify.get("/", async (_req, _reply) => {
-  return { hello: "canals" };
+fastify.get("/", async () => {
+  return {
+    hello: "canals",
+    service: "canals-orders",
+    docs: "https://github.com/mfbaltaza/canals-orders#readme",
+    endpoints: {
+      createOrder: "POST /orders",
+      health: "GET /healthz",
+    },
+  };
 });
 
 const start = async () => {

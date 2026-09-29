@@ -1,6 +1,6 @@
 # canals-orders
 
-`POST /orders` for an order management API.
+We are building a `POST /orders` for an order management API.
 
 **Live:** https://canals-orders-production.up.railway.app  
 **Test it over!** https://canals-orders-demo.netlify.app/
@@ -20,19 +20,7 @@ npm run db:seed           # customers, products, warehouses, stock (deletes all 
 npm run dev               # http://localhost:3000
 ```
 
-### Environment
-
-| Variable | Required | Default | Notes |
-|---|---|---|---|
-| `DATABASE_URL` | yes | — | Pooled URL on hosts like Neon; validated at boot (`src/env.ts`) |
-| `DIRECT_URL` | only with a pooler | `DATABASE_URL` | Non-pooled URL, used by migrations |
-| `HOST` | no | `127.0.0.1` | Set `0.0.0.0` in containers and on the host |
-| `PORT` | no | `3000` | |
-| `LOG_LEVEL` | no | `info` | |
-| `RATE_LIMIT_MAX` | no | `10` in production, else off | Requests per minute per IP on `POST /orders`; `0` turns it off |
-| `TRUST_PROXY` | no | `true` in production, else `false` | Take the client IP from `X-Forwarded-For`; only behind a trusted proxy |
-| `CORS_ORIGINS` | no | none | Comma-separated browser origins allowed to call the API |
-| `GEOCODER_TIMEOUT_MS` | no | `2000` | After this, the order gets `503 GEOCODER_UNAVAILABLE` |
+`GET /healthz` returns `200 { "status": "ok" }` when the database answers, `503` otherwise.
 
 ## Try it
 
@@ -43,7 +31,7 @@ BASE=https://canals-orders-production.up.railway.app
 KEY=$(uuidgen)   # one key per checkout attempt; reuse it to retry
 ```
 
-No `uuidgen` any unique string of 1–255 characters works: `KEY=test-1`, then `test-2`.
+Any unique string of 1–255 characters works: `KEY=test-1`, then `test-2`.
 
 **1. Place an order.** Juan orders one `prod_001`, shipped to New York:
 
@@ -65,13 +53,13 @@ curl -i $BASE/orders \
 
 **3. Vary one thing** (with a new `KEY=$(uuidgen)` each time):
 
-| Change | Result | Why |
-|---|---|---|
-| `"items": [{ "productId": "prod_005", "quantity": 1 }]` | `201`, `wh_central` | `wh_east` doesn't stock `prod_005`, so the next-closest warehouse ships it |
-| `"postalCode": "90012"` (Los Angeles) | `201`, `wh_west` | nearest warehouse |
-| `"items": [{ "productId": "prod_004", "quantity": 3 }]` | `409 OUT_OF_STOCK` | every warehouse holds only 2 |
-| `"cardNumber": "4000000000000002"` | `402`, `PAYMENT_FAILED` | declined; the reserved stock is released |
-| `"postalCode": "99999"` | `422 ADDRESS_NOT_FOUND` | the geocoder can't place it |
+| Change                                                  | Result                  | Why                                                                        |
+| ------------------------------------------------------- | ----------------------- | -------------------------------------------------------------------------- |
+| `"items": [{ "productId": "prod_005", "quantity": 1 }]` | `201`, `wh_central`     | `wh_east` doesn't stock `prod_005`, so the next-closest warehouse ships it |
+| `"postalCode": "90012"` (Los Angeles)                   | `201`, `wh_west`        | nearest warehouse                                                          |
+| `"items": [{ "productId": "prod_004", "quantity": 3 }]` | `409 OUT_OF_STOCK`      | every warehouse holds only 2                                               |
+| `"cardNumber": "4000000000000002"`                      | `402`, `PAYMENT_FAILED` | declined; the reserved stock is released                                   |
+| `"postalCode": "99999"`                                 | `422 ADDRESS_NOT_FOUND` | the geocoder can't place it                                                |
 
 **4. Prove it doesn't oversell** (local only: the script reads stock straight from the database). Twenty orders for `prod_004` arrive at the same moment, and only 6 units exist (2 per warehouse). With `npm run dev` running:
 
@@ -97,8 +85,8 @@ Stock per warehouse:   EAST 2 → 0   CENTRAL 2 → 0   WEST 2 → 0
 
 `npm run db:seed` resets everything to these fixtures and deletes all orders:
 
-| Customers | Products | Warehouses |
-|---|---|---|
+| Customers                 | Products                            | Warehouses                                                            |
+| ------------------------- | ----------------------------------- | --------------------------------------------------------------------- |
 | `cus_juan`, `cus_maricel` | `prod_001` … `prod_005` ($10 … $50) | `wh_east` (New York), `wh_central` (Chicago), `wh_west` (Los Angeles) |
 
 Stock is deliberately uneven: `wh_east` has no `prod_005`, and each warehouse holds only 2 × `prod_004`, so stock-outs and the fallback are easy to see.
@@ -107,10 +95,10 @@ Stock is deliberately uneven: `wh_east` has no `prod_005`, and each warehouse ho
 
 The payment mock only accepts these. Any other number gets `400` before any stock is touched, so the public demo never invites a real card.
 
-| Card | Outcome |
-|---|---|
-| `4242424242424242` | approved → `201 PAID` |
-| `4000000000000002` | declined → `402 PAYMENT_FAILED`, stock released |
+| Card               | Outcome                                                                |
+| ------------------ | ---------------------------------------------------------------------- |
+| `4242424242424242` | approved → `201 PAID`                                                  |
+| `4000000000000002` | declined → `402 PAYMENT_FAILED`, stock released                        |
 | `4000000000000119` | outcome unknown (timeout) → `202 PENDING_PAYMENT`, stock kept reserved |
 
 ### Addresses
@@ -119,45 +107,42 @@ The geocoder is a mock. These US postal codes resolve to their real location: `1
 
 Like the test cards, two postal codes make the mock misbehave: `00408` never answers (the request times out) and `00503` fails. Both return `503 GEOCODER_UNAVAILABLE`.
 
-## API
-
-`POST /orders`. Headers: `Idempotency-Key` (required, 1–255 chars, unique per customer).
-
-| Case | Status | Body |
-|---|---|---|
-| Order created and paid | `201` | order |
-| Same `Idempotency-Key` again | same as the original | the original order |
-| Payment outcome unknown | `202` | order (`PENDING_PAYMENT`) |
-| Invalid body / missing or invalid `Idempotency-Key` | `400` | error, `details` = field errors |
-| Card isn't a test card | `400` | error |
-| Unknown product id(s) | `400` | error, `details.unknownProductIds` |
-| Payment declined | `402` | order (`PAYMENT_FAILED`) |
-| Unknown customer | `404` | error |
-| No single warehouse has every item | `409` | error |
-| Address can't be geocoded | `422` | error |
-| Too many orders from one IP (see `RATE_LIMIT_MAX`) | `429` + `Retry-After` | error; nothing written, retry after that many seconds |
-| Database busy (no transaction within 2 s) | `503` + `Retry-After: 1` | error; nothing written, retry with the same key |
-| Geocoder timed out or failed | `503` + `Retry-After: 1` | error; nothing written, retry with the same key |
-| Anything unexpected | `500` | generic error, details only in the server log |
-
-Every error has one shape: `{ "error": { "code": "OUT_OF_STOCK", "message": "…", "details": … } }`. Every response carries a `Request-Id` header that matches the server's log lines.
-
-`GET /healthz` returns `200 { "status": "ok" }` when the database answers, `503` otherwise.
-
 ## How it works
+
+1. We parse the `Idempotency-Key` header. If it's missing or invalid, we reject the request with a 400.
+2. We validate the body against our schema, merging any repeated products into one line. If it isn't valid, we reject it with a 400.
+3. We hash the body, without the payment part, as the request's fingerprint. The card never goes into the hash.
+4. We build the order key from the `customerId` and the `Idempotency-Key`, and check whether that order already exists. If it does, we return the stored order with the status code of its current state.
+5. We check that the card is one of the documented test cards. If it isn't, we reject it with a 400.
+6. We look up the customer. If they don't exist, we return a 404.
+7. We look up the products. If any of them is unknown, we reject the request with a 400.
+8. We price every item from the database, we could never trust the client, sort the items by product, and add up the total in cents.
+9. We geocode the shipping address by using our mock service. If we can't find it, we return a 422.
+10. We rank the warehouses that have every item, closest first. If none has stock, we check whether if an earlier perhaps duplicate request with the same key took it; if so we return that order, otherwise a 409.
+11. We try each warehouse in turn. In one transaction we take every item with a conditional decrement and create the order as `PENDING_PAYMENT`. If an item runs short, the transaction rolls back and we try the next warehouse. If a request with the same key committed first, we return its order. If every warehouse runs short, it's a 409.
+12. With the stock reserved and committed, we charge the card for the total, with the order id as the description.
+13. Approved: we mark the order `PAID` and return 201. If saving that fails, we return 202, because the money has moved.
+14. Declined: in one transaction we mark the order `PAYMENT_FAILED` and put the stock back, then return 402.
+15. Unknown (the call timed out or failed): we leave the order `PENDING_PAYMENT` with its stock reserved and return 202.
 
 ## Decisions
 
-- **The card is charged after the reservation commits, never inside the transaction.** A database write can be rolled back; a card charge can't. Committing first also frees the stock row right away, so when those were the last units, other orders go to a warehouse that has stock instead of waiting on a lock. Revisit: never.
+- **The `Idempotency-Key` is required and unique per customer.** A repeated request maps to the order it already created, so nothing is charged twice. It's per customer, not global, because another customer could send the same key and get someone else's order back.
 
-- **Stock is reserved with a conditional decrement.** 
-It prevents oversells. The formula and the check run in one statement, so Postgres re-reads the quantity at the moment of the write. If someone bought just before us, we update from their result, not from a stale read. We do this instead of read → check → write, which can sell items we don't have, and fails silently when requests overlap. Revisit: When a product's stock no longer fits in one row per warehouse (for example, split across shelves, or across buckets to speed up a hot SKU), so a check has to add up several rows. Then we'd need row locks (`SELECT … FOR UPDATE`) or `SERIALIZABLE`. `SET quantity = quantity - wanted WHERE quantity >= wanted`
+- **We charge the card after the reservation commits, never inside the transaction.** A database write can be rolled back; a card charge can't. Committing first also frees the stock row right away, so when those were the last units, other orders go to a warehouse that has stock instead of waiting on a lock. Revisit: never.
+
+- **If a warehouse can't fill the order, it falls back to the next closest.** Between ranking the warehouses and reserving, the stock can change. This would need revisiting if one order may ship from several warehouses.
+
+- **Money is integer cents, and each order item keeps a copy of its price.** Cents avoid floating-point rounding. The copy means that if a price changes later, the order still shows what the customer paid. We would need to revisit this when an order could pass $21.4M, the `INTEGER` limit, which would need a `BigInt` column.
+
+- **Fastify + Postgres + Prisma.** For the assignmnet I decided to go with this stack because Fastify provides a quick way to start a node project which is in line with the stack used at Canals. Also due to the assignment requiring the use of a real database, we went with Postgres + Prisma to take advantage of the typing and schema parsing abilities it provides. This stack proves really helpful when developing manually or with AI.
+
+- **Synchronous, not a queue + worker.** It's simpler, fits the assignment, and has fewer points of failure. The customer gets the final answer in one round trip. It stays correct under load, and retries are safe. I would revisit this selection for heavy traffic spikes, or a payment provider slow enough that checkout waits too long.
+
+- **Stock is reserved with a conditional decrement.**
+  It prevents oversells. The formula and the check run in one statement, so Postgres re-reads the quantity at the moment of the write. If someone bought just before us, we update from their result, not from a stale read. We do this instead of read → check → write, which can sell items we don't have, and fails silently when requests overlap. Revisit: When a product's stock no longer fits in one row per warehouse (for example, split across shelves, or across buckets to speed up a hot SKU), so a check has to add up several rows. Then we'd need row locks (`SELECT … FOR UPDATE`) or `SERIALIZABLE`. `SET quantity = quantity - wanted WHERE quantity >= wanted`
+
 - **An unknown payment outcome keeps the stock reserved.** After a timeout we might have charged the customer and just don't know yet, so the order stays `PENDING_PAYMENT` (`202`) with its stock reserved until it's reconciled (a sweeper is planned). Revisit with a real payment provider: use its tools, such as webhooks, to reconcile.
-- **If a warehouse can't fill the order, it falls back to the next closest.** Between ranking the warehouses and reserving, the stock can change. Revisit if one order may ship from several warehouses.
-- **The `Idempotency-Key` is required and unique per customer.** A repeated request maps to the order it already created, so nothing is charged twice. It's per customer, not global, because another customer could send the same key and get someone else's order back. Revisit: compare the request hash, so the same key with a different body is rejected.
-- **Money is integer cents, and each order item keeps a copy of its price.** Cents avoid floating-point rounding (`0.1 + 0.2 !== 0.3`). The copy means that if a price changes later, the order still shows what the customer paid. Revisit when an order could pass $21.4M, the `INTEGER` limit, which would need a `BigInt` column.
-- **Synchronous, not a queue + worker.** It's simpler, fits the assignment, and has fewer points of failure. The customer gets the final answer in one round trip. It stays correct under load, and retries are safe. Revisit for heavy traffic spikes, or a payment provider slow enough that checkout waits too long.
-- **Postgres + Prisma.** The database enforces the rules app code could get wrong (the unique idempotency key, foreign keys, `CHECK (quantity >= 0)`) and runs the reservation as one transaction; Prisma gives typed queries from one schema. It can't declare CHECK constraints, so those are hand-written in the migration SQL.
 
 ## Checks
 
@@ -196,3 +181,17 @@ prisma/                         Schema, migrations (hand-written CHECK constrain
 scripts/concurrency.ts          Parallel-orders proof: no overselling, one order per idempotency key
 docker/Dockerfile               App image (used by docker-compose.yml)
 ```
+
+### Environment
+
+| Variable              | Required           | Default                            | Notes                                                                  |
+| --------------------- | ------------------ | ---------------------------------- | ---------------------------------------------------------------------- |
+| `DATABASE_URL`        | yes                | —                                  | Pooled URL on hosts like Neon; validated at boot (`src/env.ts`)        |
+| `DIRECT_URL`          | only with a pooler | `DATABASE_URL`                     | Non-pooled URL, used by migrations                                     |
+| `HOST`                | no                 | `127.0.0.1`                        | Set `0.0.0.0` in containers and on the host                            |
+| `PORT`                | no                 | `3000`                             |                                                                        |
+| `LOG_LEVEL`           | no                 | `info`                             |                                                                        |
+| `RATE_LIMIT_MAX`      | no                 | `10` in production, else off       | Requests per minute per IP on `POST /orders`; `0` turns it off         |
+| `TRUST_PROXY`         | no                 | `true` in production, else `false` | Take the client IP from `X-Forwarded-For`; only behind a trusted proxy |
+| `CORS_ORIGINS`        | no                 | none                               | Comma-separated browser origins allowed to call the API                |
+| `GEOCODER_TIMEOUT_MS` | no                 | `2000`                             | After this, the order gets `503 GEOCODER_UNAVAILABLE`                  |
