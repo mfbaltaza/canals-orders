@@ -7,6 +7,7 @@ import { prisma } from "./db.ts";
 import { env } from "./env.ts";
 import { healthRoutes } from "./health/health.routes.ts";
 import { orderRoutes } from "./orders/orders.routes.ts";
+import { startSweeper } from "./orders/orders.sweep.ts";
 import { GeocoderUnavailable } from "./providers/geocoder/geocoder.provider.ts";
 
 const SHUTDOWN_TIMEOUT_MS = 10_000;
@@ -28,7 +29,10 @@ fastify.addHook("onRequest", async (req, reply) => {
   reply.header("request-id", req.id);
 });
 
+let stopSweeper: (() => Promise<void>) | undefined;
+
 fastify.addHook("onClose", async () => {
+  await stopSweeper?.();
   await prisma.$disconnect();
 });
 
@@ -87,6 +91,12 @@ fastify.get("/", async (_req, _reply) => {
 const start = async () => {
   try {
     await fastify.listen({ host: env.HOST, port: env.PORT });
+    if (env.SWEEP_INTERVAL_MS > 0) {
+      stopSweeper = startSweeper(
+        { intervalMs: env.SWEEP_INTERVAL_MS, staleAfterMs: env.SWEEP_STALE_AFTER_MS },
+        fastify.log.child({ component: "sweeper" }),
+      );
+    }
   } catch (e) {
     fastify.log.error(e);
     process.exit(1);
