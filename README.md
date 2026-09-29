@@ -113,7 +113,7 @@ Like the test cards, two postal codes make the mock misbehave: `00408` never ans
 1. We parse the `Idempotency-Key` header. If it's missing or invalid, we reject the request with a 400.
 2. We validate the body against our schema, merging any repeated products into one line. If it isn't valid, we reject it with a 400.
 3. We hash the body, without the payment part, as the request's fingerprint. The card never goes into the hash.
-4. We build the order key from the `customerId` and the `Idempotency-Key`, and check whether that order already exists. If it does, we return the stored order with the status code of its current state.
+4. We build the order key from the `customerId` and the `Idempotency-Key`, and check whether that order already exists. If it does and its fingerprint matches, we return the stored order with the status code of its current state. If the fingerprint differs, the key was reused for a different order, and we return `422 IDEMPOTENCY_KEY_REUSED`.
 5. We check that the card is one of the documented test cards. If it isn't, we reject it with a 400.
 6. We look up the customer. If they don't exist, we return a 404.
 7. We look up the products. If any of them is unknown, we reject the request with a 400.

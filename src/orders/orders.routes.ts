@@ -24,6 +24,13 @@ const outOfStockError = {
   error: { code: "OUT_OF_STOCK", message: "No warehouse has enough stock for every item" },
 };
 
+const idempotencyKeyReusedError = {
+  error: {
+    code: "IDEMPOTENCY_KEY_REUSED",
+    message: "This Idempotency-Key was already used with a different request body",
+  },
+};
+
 const createOrderOptions = {
   config: { rateLimit: { max: env.RATE_LIMIT_MAX, timeWindow: "1 minute" } },
 };
@@ -80,6 +87,10 @@ export async function orderRoutes(fastify: FastifyInstance) {
         where: { customerId_idempotencyKey: orderKey },
       });
       if (!existing) return false;
+      if (existing.idempotencyRequestHash !== requestHash) {
+        reply.code(422).send(idempotencyKeyReusedError);
+        return true;
+      }
       reply.code(replayStatusCode[existing.status]).send(existing);
       return true;
     };
