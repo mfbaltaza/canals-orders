@@ -100,7 +100,7 @@ The payment mock only accepts these. Any other number gets `400` before any stoc
 | `4000000000000119` | approved, but the response is lost → `202 PENDING_PAYMENT`                                 |
 | `4000000000009999` | no answer within `PAYMENT_TIMEOUT_MS` (10 s) → `202 PENDING_PAYMENT`, stock stays reserved |
 
-Both `202` orders were charged, so the sweeper marks them `PAID` once they are `SWEEP_STALE_AFTER_MS` old (10 minutes by default). That's too slow to watch, so the tests in [Checks](#checks) prove it instead.
+Both `202` orders were charged, so the sweeper marks them `PAID` once they are `SWEEP_STALE_AFTER_MS` old (10 minutes by default). The live service uses a shorter setting: wait about two minutes, retry with the same key, and you get `201 PAID`. Locally, the tests in [Checks](#checks) prove it instead.
 
 ### Addresses
 
@@ -211,7 +211,7 @@ docker/Dockerfile               App image (used by docker-compose.yml)
 | `HOST`                 | no                 | `127.0.0.1`                        | Set `0.0.0.0` in containers and on the host                                                                     |
 | `PORT`                 | no                 | `3000`                             |                                                                                                                 |
 | `LOG_LEVEL`            | no                 | `info`                             |                                                                                                                 |
-| `RATE_LIMIT_MAX`       | no                 | `10` in production, else off       | Requests per minute per IP on `POST /orders`; `0` turns it off                                                  |
+| `RATE_LIMIT_MAX`       | no                 | `10` in production, else off       | Requests per minute per IP on `POST /orders`; `0` turns it off. The live service allows 60                      |
 | `TRUST_PROXY`          | no                 | `true` in production, else `false` | Take the client IP from `X-Forwarded-For`; only behind a trusted proxy                                          |
 | `CORS_ORIGINS`         | no                 | none                               | Comma-separated browser origins allowed to call the API                                                         |
 | `GEOCODER_TIMEOUT_MS`  | no                 | `2000`                             | After this, the order gets `503 GEOCODER_UNAVAILABLE`                                                           |

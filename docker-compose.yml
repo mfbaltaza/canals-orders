@@ -37,6 +37,8 @@ services:
       DATABASE_URL: postgresql://canals:canals@db:5432/canals_orders
       # The limit protects the public demo; load scripts here fire from one IP
       RATE_LIMIT_MAX: 0
+      # Lets the playground (local or hosted) call this API from the browser
+      CORS_ORIGINS: http://localhost:5173,https://canals-orders-demo.netlify.app
     ports:
       - "3000:3000"
     depends_on:
