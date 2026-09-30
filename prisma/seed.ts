@@ -39,10 +39,11 @@ const inventory = warehouses.flatMap((w) =>
 
 async function main() {
   // Delete and recreate, not upsert: an upsert would keep an existing row's old id
-  const deletedOrders = await prisma.$transaction(
+  const deleted = await prisma.$transaction(
     async (tx) => {
       // Orders first: they reference everything else
-      const { count } = await tx.order.deleteMany();
+      const orders = await tx.order.deleteMany();
+      const charges = await tx.mockCharge.deleteMany();
       await tx.customer.deleteMany();
       await tx.product.deleteMany();
       await tx.warehouse.deleteMany();
@@ -51,13 +52,13 @@ async function main() {
       await tx.product.createMany({ data: products });
       await tx.warehouse.createMany({ data: warehouses });
       await tx.inventory.createMany({ data: inventory });
-      return count;
+      return { orders: orders.count, charges: charges.count };
     },
     { timeout: 30_000 },
   );
 
   console.log(
-    `Deleted ${deletedOrders} orders. Seeded ${customers.length} customers, ${products.length} products, ${warehouses.length} warehouses, ${inventory.length} inventory rows`,
+    `Deleted ${deleted.orders} orders and ${deleted.charges} mock charges. Seeded ${customers.length} customers, ${products.length} products, ${warehouses.length} warehouses, ${inventory.length} inventory rows`,
   );
 }
 

@@ -13,7 +13,7 @@ Needs Docker:
 
 ```bash
 docker compose up --build -d                     # Postgres, migrations, app on http://localhost:3000
-docker compose run --rm migrate npm run db:seed  # fixtures; deletes all orders
+docker compose run --rm migrate npm run db:seed  # fixtures; deletes all orders and mock charges
 ```
 
 Seed again whenever you want to reset orders and stock.
