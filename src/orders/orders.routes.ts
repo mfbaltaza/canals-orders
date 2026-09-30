@@ -146,10 +146,10 @@ export async function orderRoutes(fastify: FastifyInstance) {
       return reply.code(409).send(outOfStockError);
     }
 
-    let order: Order | undefined;
+    let placed: { order: Order; attemptId: string } | undefined;
     for (const candidate of ranked) {
       try {
-        order = await prisma.$transaction(async (tx) => {
+        placed = await prisma.$transaction(async (tx) => {
           for (const item of orderItems) {
             const { count } = await tx.inventory.updateMany({
               where: {
@@ -162,7 +162,7 @@ export async function orderRoutes(fastify: FastifyInstance) {
             if (count === 0) throw new OutOfStock(candidate.warehouse.id, item.productId);
           }
 
-          return await tx.order.create({
+          const order = await tx.order.create({
             data: {
               customerId: customer.id,
               warehouseId: candidate.warehouse.id,
@@ -175,8 +175,13 @@ export async function orderRoutes(fastify: FastifyInstance) {
               items: { create: orderItems },
             },
           });
+          // Same transaction as the order, so the sweeper never sees a committed order without its attempt
+          const attempt = await tx.paymentAttempt.create({
+            data: { orderId: order.id, amountCents: totalCents },
+          });
+          return { order, attemptId: attempt.id };
         });
-        req.log = req.log.child({ orderId: order.id });
+        req.log = req.log.child({ orderId: placed.order.id });
         reply.log = req.log;
         req.log.info(
           { warehouse: candidate.warehouse.code, distanceInKm: Math.round(candidate.distanceInKm) },
@@ -193,15 +198,11 @@ export async function orderRoutes(fastify: FastifyInstance) {
       }
     }
 
-    if (order === undefined) {
+    if (placed === undefined) {
       if (await replayExisting()) return reply;
       return reply.code(409).send(outOfStockError);
     }
-
-    // Written before charging, so a crash mid-call still leaves a PENDING attempt
-    const attempt = await prisma.paymentAttempt.create({
-      data: { orderId: order.id, amountCents: totalCents },
-    });
+    const { order, attemptId } = placed;
 
     // After this call money may have moved, so a failure means "unknown" (202), not an error
     let payment: ChargeResult;
@@ -219,9 +220,9 @@ export async function orderRoutes(fastify: FastifyInstance) {
 
     // Outside the order transactions, so a rollback can't erase the provider's answer
     try {
-      await prisma.paymentAttempt.update({ where: { id: attempt.id }, data: attemptOutcome(payment) });
+      await prisma.paymentAttempt.update({ where: { id: attemptId }, data: attemptOutcome(payment) });
     } catch (err) {
-      req.log.error({ err, attemptId: attempt.id, payment }, "could not record payment attempt outcome");
+      req.log.error({ err, attemptId, payment }, "could not record payment attempt outcome");
     }
 
     if (payment.status === "approved") {
