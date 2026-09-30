@@ -21,6 +21,10 @@ export function withChargeTimeout(inner: PaymentProvider, timeoutMs: number): Pa
         throw err;
       }
     },
-    findChargeByDescription: (description) => inner.findChargeByDescription(description),
+    async findChargeByDescription(description, options) {
+      const timeout = AbortSignal.timeout(timeoutMs);
+      const signal = options?.signal ? AbortSignal.any([options.signal, timeout]) : timeout;
+      return Promise.race([inner.findChargeByDescription(description, { signal }), rejectOnAbort(signal)]);
+    },
   };
 }

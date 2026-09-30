@@ -3,22 +3,20 @@
 `POST /orders` for an order management API.
 
 **Live:** https://canals-orders-production.up.railway.app  
-**Test it over!** https://canals-orders-demo.netlify.app/
+**Try it out!** https://canals-orders-demo.netlify.app/
 
 Stack: Node ≥ 22.18 (runs `.ts` directly), Fastify 5, Prisma 7, Postgres, Zod 4.
 
 ## Quick start
 
-Needs Node ≥ 22.18 (24 pinned in `.node-version`) and Docker.
+Needs Docker:
 
 ```bash
-npm ci                    # also runs prisma generate
-cp .env.example .env      # points at the local Docker Postgres
-npm run db:up             # Postgres 16 on :5432
-npm run db:deploy         # apply migrations
-npm run db:seed           # customers, products, warehouses, stock (deletes all orders)
-npm run dev               # http://localhost:3000
+docker compose up --build -d                     # Postgres, migrations, app on http://localhost:3000
+docker compose run --rm migrate npm run db:seed  # fixtures; deletes all orders
 ```
+
+Seed again whenever you want to reset orders and stock.
 
 `GET /healthz` returns `200 { "status": "ok" }` when the database answers, `503` otherwise.
 
@@ -47,7 +45,7 @@ curl -i $BASE/orders \
   }'
 ```
 
-→ `201`, `"status": "PAID"`, `"warehouseId": "wh_east"` (the nearest warehouse with stock).
+→ `201`, `"status": "PAID"`, `"warehouseId": "wh_east"` (the nearest warehouse with stock). The response includes the purchased `items` with their quantities and price snapshots; retrying returns the same public shape.
 
 **2. Retry it.** Run the same command again, with the same `$KEY`: → `201` with the **same order `id`**. The card isn't charged again and stock isn't taken twice.
 
@@ -61,10 +59,10 @@ curl -i $BASE/orders \
 | `"cardNumber": "4000000000000002"`                      | `402`, `PAYMENT_FAILED` | declined; the reserved stock is released                                   |
 | `"postalCode": "99999"`                                 | `422 ADDRESS_NOT_FOUND` | the geocoder can't place it                                                |
 
-**4. Prove it doesn't oversell** (local only: the script reads stock straight from the database). Twenty orders for `prod_004` arrive at the same moment, and only 6 units exist (2 per warehouse). With `npm run dev` running:
+**4. Prove it doesn't oversell** (local only: the script reads stock straight from the database). Twenty orders for `prod_004` arrive at the same moment, and only 6 units exist (2 per warehouse):
 
 ```bash
-npm run db:seed && npm run concurrency
+docker compose run --rm migrate sh -c "npm run db:seed && npm run concurrency -- --base http://app:3000"
 ```
 
 Condensed output:
@@ -79,11 +77,11 @@ Stock per warehouse:   EAST 2 → 0   CENTRAL 2 → 0   WEST 2 → 0
 ✅ Every other response is 409 or 503
 ```
 
-`npm run concurrency -- --same-key --sku SKU-001` fires 20 retries of **one** order with one shared key instead: one order is created and stock drops by 1.
+Adding `--same-key --sku SKU-001` after `--base http://app:3000` fires 20 retries of **one** order with one shared key instead: one order is created and stock drops by 1.
 
 ### Seed data
 
-`npm run db:seed` resets everything to these fixtures and deletes all orders:
+Seeding resets everything to these fixtures and deletes all orders:
 
 | Customers                 | Products                            | Warehouses                                                            |
 | ------------------------- | ----------------------------------- | --------------------------------------------------------------------- |
@@ -95,12 +93,14 @@ Stock is deliberately uneven: `wh_east` has no `prod_005`, and each warehouse ho
 
 The payment mock only accepts these. Any other number gets `400` before any stock is touched, so the public demo never invites a real card.
 
-| Card               | Outcome                                                                                                                 |
-| ------------------ | ----------------------------------------------------------------------------------------------------------------------- |
-| `4242424242424242` | approved → `201 PAID`                                                                                                   |
-| `4000000000000002` | declined → `402 PAYMENT_FAILED`, stock released                                                                         |
-| `4000000000000119` | outcome unknown → `202 PENDING_PAYMENT`, stock kept reserved until the sweeper resolves it                              |
-| `4000000000009999` | no answer within `PAYMENT_TIMEOUT_MS` (10 s) → `202 PENDING_PAYMENT`, stock kept reserved until the sweeper resolves it |
+| Card               | Outcome                                                                                    |
+| ------------------ | ------------------------------------------------------------------------------------------ |
+| `4242424242424242` | approved → `201 PAID`                                                                      |
+| `4000000000000002` | declined → `402 PAYMENT_FAILED`, stock released                                            |
+| `4000000000000119` | approved, but the response is lost → `202 PENDING_PAYMENT`                                 |
+| `4000000000009999` | no answer within `PAYMENT_TIMEOUT_MS` (10 s) → `202 PENDING_PAYMENT`, stock stays reserved |
+
+Both `202` orders were charged, so the sweeper marks them `PAID` once they are `SWEEP_STALE_AFTER_MS` old (10 minutes by default). That's too slow to watch, so the tests in [Checks](#checks) prove it instead.
 
 ### Addresses
 
@@ -126,7 +126,7 @@ Like the test cards, two postal codes make the mock misbehave: `00408` never ans
 14. Declined: in one transaction we mark the order `PAYMENT_FAILED` and put the stock back, then return 402.
 15. Unknown (the call timed out or failed): we leave the order `PENDING_PAYMENT` with its stock reserved and return 202.
 
-**Stuck orders.** Every `SWEEP_INTERVAL_MS` (1 minute by default), a sweeper inside the app looks for orders that have been `PENDING_PAYMENT` for longer than `SWEEP_STALE_AFTER_MS` (10 minutes by default): the request crashed, or the provider never answered. It decides from the order's latest payment attempt: none → `EXPIRED`, approved → `PAID`, declined → `PAYMENT_FAILED`, pending or unknown → it asks the provider for the charge by its description. Whenever the order doesn't end up `PAID`, its stock goes back in the same transaction. `npm run sweep` runs one pass by hand.
+**Stuck orders.** Every `SWEEP_INTERVAL_MS` (1 minute by default), a sweeper inside the app looks for orders that have been `PENDING_PAYMENT` for longer than `SWEEP_STALE_AFTER_MS` (10 minutes by default): the request crashed, or the provider never answered. It decides from the order's latest payment attempt: none → left pending for investigation, approved → `PAID`, declined → `PAYMENT_FAILED`, pending or unknown → it asks the provider for the charge by its description and checks the amount. A confirmed approval becomes `PAID`; a confirmed decline becomes `PAYMENT_FAILED` and its stock goes back in the same transaction. Missing records and unresolved payments stay pending with stock reserved. The payment attempt is updated together with the order. `npm run sweep` runs one pass by hand.
 
 ## Decisions
 
@@ -136,22 +136,31 @@ Like the test cards, two postal codes make the mock misbehave: `00408` never ans
 
 - **If a warehouse can't fill the order, it falls back to the next closest.** Between ranking the warehouses and reserving, the stock can change. This would need revisiting if one order may ship from several warehouses.
 
-- **Money is integer cents, and each order item keeps a copy of its price.** Cents avoid floating-point rounding. The copy means that if a price changes later, the order still shows what the customer paid. We would need to revisit this when an order could pass $21.4M, the `INTEGER` limit, which would need a `BigInt` column.
+- **Money is integer cents, and each order item keeps a copy of its price.** Cents avoid floating-point rounding. The copy means that if a price changes later, the order still shows what the customer paid. Totals outside 1–2,147,483,647 cents return `422 ORDER_TOTAL_OUT_OF_RANGE` before stock is reserved or payment is called. Larger orders would need a `BigInt` column.
 
 - **Fastify + Postgres + Prisma.** For the assignment I decided to go with this stack because Fastify provides a quick way to start a node project which is in line with the stack used at Canals. Also due to the assignment requiring the use of a real database, we went with Postgres + Prisma to take advantage of the typing and schema parsing abilities it provides.
 
 - **Synchronous, not a queue + worker.** It's simpler, fits the assignment, and has fewer points of failure. The customer gets the final answer in one round trip. It stays correct under load, and retries are safe. I would revisit this selection for heavy traffic spikes, or a payment provider slow enough that checkout waits too long.
 
-- **Stock is reserved with a conditional decrement: `SET quantity = quantity - wanted WHERE quantity >= wanted`.** This helps us prevents oversells. The formula and the check run in one statement, so Postgres re-reads the quantity at the moment of the write. If someone bought just before us, we would update from their result, not from a stale read. We do this instead of read -> check -> write, which can sell items we don't have, and fails silently when requests overlap. I would revisit this when a product's stock no longer fits in one row per warehouse (for example, split across shelves, or across buckets to speed up a hot SKU), because then we will need to add up several rows. Then we'd need row locks (`SELECT … FOR UPDATE`) or `SERIALIZABLE`.
+- **Stock is reserved with a conditional decrement: `SET quantity = quantity - wanted WHERE quantity >= wanted`.** This helps us prevent oversells. The formula and the check run in one statement, so Postgres re-reads the quantity at the moment of the write. If someone bought just before us, we would update from their result, not from a stale read. We do this instead of read -> check -> write, which can sell items we don't have, and fails silently when requests overlap. I would revisit this when a product's stock no longer fits in one row per warehouse (for example, split across shelves, or across buckets to speed up a hot SKU), because then we will need to add up several rows. Then we'd need row locks (`SELECT … FOR UPDATE`) or `SERIALIZABLE`.
 
-- **An unknown payment outcome keeps the stock reserved, and a sweeper resolves it.** After a timeout we might have charged the customer and just don't know yet, so the order stays `PENDING_PAYMENT` (`202`) with its stock reserved. The sweeper trusts our own payment record first and asks the provider only when the outcome is unknown: charged → `PAID`, not charged → `EXPIRED` and the stock goes back. Every close is guarded by `status = PENDING_PAYMENT`, in the same transaction as the stock release, so running it twice or on two instances never releases stock twice. Revisit with a real payment provider: use its webhooks, and cancel or void the charge before expiring an order, since it could still settle after we looked.
+- **Unknown payments keep their stock reserved.** The sweeper marks confirmed approvals `PAID` and releases stock only for definitive declines. It checks amounts and updates the order and payment attempt together. Status guards prevent double release. Missing records stay pending; safely expiring them requires cancellation or a way to prevent a paused request from charging later.
 
-- **The payment call times out after 10 seconds, and a timeout means "unknown".** It never becomes a decline and the charge is never retried, because the card may already be charged. The timeout also keeps the sweeper safe: it only looks at orders older than the timeout plus a minute, so it never decides while a charge is still in flight. When I would revisit? when using a real provider, send an idempotency key with the charge so a retry becomes safe.
+- **The mock has a durable provider ledger.** `MockCharge` stores outcomes independently of payment attempts. The unknown card simulates a lost approval response; the slow card settles after 60 seconds, including across app restarts. Descriptions are stable mock charge keys. A real integration would use the provider's idempotency and reconciliation APIs.
+
+- **Payment calls and lookups have a 10-second timeout.** Stopping our wait does not cancel a charge. Timeout and unresolved lookup results keep the order pending; the charge is never automatically retried.
 
 ## Checks
 
 ```bash
-npm run typecheck && npm run lint
+docker compose run --rm migrate sh -c "npm run typecheck && npm run lint"
+```
+
+The tests run against a throwaway database, so they never touch your data:
+
+```bash
+docker compose run --rm --build test
+docker compose rm -sf test-db   # remove the throwaway database
 ```
 
 ## Project layout
@@ -166,6 +175,7 @@ src/
   orders/
     orders.routes.ts            POST /orders, top to bottom
     orders.schemas.ts           Zod request schemas
+    orders.response.ts          Public order shape, shared by new orders and replays
     orders.errors.ts            Domain errors
     orders.charge.ts            Charge description, shared by the route and the sweeper
     orders.sweep.ts             Sweeper for orders stuck in PENDING_PAYMENT, runs on a timer
@@ -175,7 +185,7 @@ src/
     index.ts                    Picks the implementation behind each interface (mocks today)
     payment/
       payment.provider.ts       PaymentProvider interface
-      payment.mock.ts           Mock + test cards
+      payment.mock.ts           Durable mock provider ledger + test cards
       payment.resilience.ts     Timeout around any payment provider
     geocoder/
       geocoder.provider.ts      Geocoder interface
@@ -188,6 +198,7 @@ src/
 prisma/                         Schema, migrations (hand-written CHECK constraints), seed
 scripts/concurrency.ts          Parallel-orders proof: no overselling, one order per idempotency key
 scripts/sweep.ts                One sweeper pass by hand
+tests/orders.test.ts            Payment recovery (replays, lost responses, timeouts, declines, amounts) and order total limits
 docker/Dockerfile               App image (used by docker-compose.yml)
 ```
 
@@ -207,3 +218,16 @@ docker/Dockerfile               App image (used by docker-compose.yml)
 | `PAYMENT_TIMEOUT_MS`   | no                 | `10000`                            | After this, the charge counts as unknown: `202 PENDING_PAYMENT`, never declined, never retried                  |
 | `SWEEP_INTERVAL_MS`    | no                 | `60000`                            | How often the sweeper runs; `0` turns it off (`npm run sweep` runs one pass by hand)                            |
 | `SWEEP_STALE_AFTER_MS` | no                 | `600000`                           | Only orders pending for longer are swept. Must be at least `PAYMENT_TIMEOUT_MS` + 60000, or the app won't start |
+
+## Development
+
+Needs Node ≥ 22.18 (24 pinned in `.node-version`). Postgres stays in Docker; stop the Docker app first (`docker compose stop app`) so port 3000 is free.
+
+```bash
+npm ci                    # also runs prisma generate
+cp .env.example .env      # points at the Docker Postgres on :55432
+npm run db:up && npm run db:deploy && npm run db:seed
+npm run dev               # restarts on every change to a file the server imports
+```
+
+`.env` and `prisma/schema.prisma` aren't watched: after a schema change, run `npm run db:migrate`.

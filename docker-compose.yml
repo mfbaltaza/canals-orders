@@ -6,7 +6,7 @@ services:
       POSTGRES_PASSWORD: canals
       POSTGRES_DB: canals_orders
     ports:
-      - "5432:5432"
+      - "55432:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
     healthcheck:
@@ -15,13 +15,12 @@ services:
       timeout: 3s
       retries: 15
 
-  # Re-seeds on every `up`: all orders are deleted and stock is reset
   migrate:
     build:
       context: .
       dockerfile: docker/Dockerfile
       target: build
-    command: ["sh", "-c", "npm run db:deploy && npm run db:seed"]
+    command: ["npm", "run", "db:deploy"]
     environment:
       DATABASE_URL: postgresql://canals:canals@db:5432/canals_orders
     depends_on:
@@ -36,11 +35,44 @@ services:
     init: true
     environment:
       DATABASE_URL: postgresql://canals:canals@db:5432/canals_orders
+      # The limit protects the public demo; load scripts here fire from one IP
+      RATE_LIMIT_MAX: 0
     ports:
       - "3000:3000"
     depends_on:
       migrate:
         condition: service_completed_successfully
+
+  # `docker compose run --rm test`: a throwaway database, never the app's
+  test-db:
+    image: postgres:16-alpine
+    profiles: [test]
+    environment:
+      POSTGRES_USER: canals
+      POSTGRES_PASSWORD: canals
+      POSTGRES_DB: payment_review
+    tmpfs:
+      - /var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U canals -d payment_review"]
+      interval: 2s
+      timeout: 3s
+      retries: 15
+
+  test:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+      target: build
+    profiles: [test]
+    command: ["sh", "-c", "npm run db:deploy && npm test"]
+    environment:
+      NODE_ENV: test
+      DATABASE_URL: postgresql://canals:canals@test-db:5432/payment_review
+      PAYMENT_TIMEOUT_MS: 1000
+    depends_on:
+      test-db:
+        condition: service_healthy
 
 volumes:
   pgdata:

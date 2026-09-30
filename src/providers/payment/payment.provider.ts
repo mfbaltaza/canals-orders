@@ -14,9 +14,12 @@ export type ChargeOptions = {
   signal?: AbortSignal | undefined;
 };
 
-export type FoundCharge = { reference: string };
+export type ChargeLookupResult =
+  | { status: "approved"; reference: string; amountCents: number }
+  | { status: "declined"; reason: string; amountCents: number }
+  | { status: "unknown" };
 
 export interface PaymentProvider {
   charge(request: ChargeRequest, options?: ChargeOptions): Promise<ChargeResult>;
-  findChargeByDescription(description: string): Promise<FoundCharge | null>;
+  findChargeByDescription(description: string, options?: ChargeOptions): Promise<ChargeLookupResult>;
 }

@@ -19,7 +19,6 @@ export const ShippingAddress = z.object({
 
 const OrderItem = z.object({
   productId: Id,
-  // Keeps quantity × priceCents well inside the Int column
   quantity: z.number().int().positive().max(1000),
 });
 

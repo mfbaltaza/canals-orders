@@ -26,7 +26,7 @@ const { values: args } = parseArgs({
 
 const n = Number(args.n);
 const qty = Number(args.qty);
-const isLocal = /^http:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(args.base);
+const isLocal = /^http:\/\/(localhost|127\.0\.0\.1|app)(:\d+)?$/.test(args.base);
 if (!isLocal && !args["allow-remote"]) {
   console.error(`Refusing to write ${n} orders to ${args.base}. Add --allow-remote if you mean it.`);
   process.exit(1);

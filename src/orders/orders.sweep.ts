@@ -7,12 +7,12 @@ import { chargeDescription } from "./orders.charge.ts";
 export type SweepResult = {
   orderId: string;
   attemptStatus: PaymentAttempt["status"] | "NONE";
-  outcome: "PAID" | "PAYMENT_FAILED" | "EXPIRED" | "skipped" | "superseded" | "failed";
+  outcome: "PAID" | "PAYMENT_FAILED" | "skipped" | "superseded" | "failed";
   reference?: string;
   error?: unknown;
 };
 
-type Resolution = { status: "PAID"; reference: string } | { status: "PAYMENT_FAILED" | "EXPIRED" };
+type Resolution = { status: "PAID"; reference: string } | { status: "PAYMENT_FAILED"; reason: string };
 
 const findStaleOrders = (cutoff: Date, limit: number) =>
   prisma.order.findMany({
@@ -26,18 +26,23 @@ type StaleOrder = Awaited<ReturnType<typeof findStaleOrders>>[number];
 
 async function reconcile(order: StaleOrder): Promise<Resolution | null> {
   const attempt = order.paymentAttempts[0];
-  // The attempt is written before charging, so no attempt means the card was never charged
-  if (!attempt) return { status: "EXPIRED" };
+  // A missing record does not rule out a charge still in flight.
+  if (!attempt) return null;
+  if (attempt.amountCents !== order.totalCents) throw new Error("Payment attempt amount does not match order");
 
   switch (attempt.status) {
     case "APPROVED":
       return attempt.reference ? { status: "PAID", reference: attempt.reference } : null;
     case "DECLINED":
-      return { status: "PAYMENT_FAILED" };
+      return { status: "PAYMENT_FAILED", reason: attempt.declineReason ?? "card_declined" };
     case "PENDING":
     case "UNKNOWN": {
       const found = await paymentProvider.findChargeByDescription(chargeDescription(order.id));
-      return found ? { status: "PAID", reference: found.reference } : { status: "EXPIRED" };
+      if (found.status === "unknown") return null;
+      if (found.amountCents !== order.totalCents) throw new Error("Provider charge amount does not match order");
+      return found.status === "approved"
+        ? { status: "PAID", reference: found.reference }
+        : { status: "PAYMENT_FAILED", reason: found.reason };
     }
   }
 }
@@ -53,6 +58,16 @@ async function apply(order: StaleOrder, resolution: Resolution): Promise<boolean
           : { status: resolution.status },
     });
     if (count === 0) return false;
+    const attempt = order.paymentAttempts[0];
+    if (attempt) {
+      await tx.paymentAttempt.update({
+        where: { id: attempt.id },
+        data:
+          resolution.status === "PAID"
+            ? { status: "APPROVED", reference: resolution.reference, declineReason: null }
+            : { status: "DECLINED", declineReason: resolution.reason, reference: null },
+      });
+    }
     if (resolution.status === "PAID") return true;
 
     // Same lock order as the reservation, so releasing stock can't deadlock with a new order

@@ -11,6 +11,7 @@
     "build": "prisma generate && tsc --noEmit",
     "start": "node src/index.ts",
     "typecheck": "tsc --noEmit",
+    "test": "node --test \"tests/**/*.test.ts\"",
     "postinstall": "prisma generate",
     "db:up": "docker compose up -d --wait db",
     "db:migrate": "prisma migrate dev && prisma generate",

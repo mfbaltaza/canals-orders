@@ -1,6 +1,6 @@
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
-import { type Order, type OrderStatus, Prisma } from "../../generated/prisma/client.ts";
+import { type OrderStatus, Prisma } from "../../generated/prisma/client.ts";
 import { prisma } from "../db.ts";
 import { env } from "../env.ts";
 import { hashRequest } from "../lib/hash.ts";
@@ -11,13 +11,13 @@ import { ChargeTimedOut } from "../providers/payment/payment.resilience.ts";
 import { rankWarehouses } from "../warehouses/warehouses.ranking.ts";
 import { chargeDescription } from "./orders.charge.ts";
 import { OutOfStock } from "./orders.errors.ts";
+import { orderResponseInclude, toOrderResponse } from "./orders.response.ts";
 import { CreateOrderBody, IdempotencyKey } from "./orders.schemas.ts";
 
 const replayStatusCode: Record<OrderStatus, number> = {
   PAID: 201,
   PAYMENT_FAILED: 402,
   PENDING_PAYMENT: 202,
-  EXPIRED: 409,
 };
 
 const outOfStockError = {
@@ -85,13 +85,14 @@ export async function orderRoutes(fastify: FastifyInstance) {
     const replayExisting = async (): Promise<boolean> => {
       const existing = await prisma.order.findUnique({
         where: { customerId_idempotencyKey: orderKey },
+        include: orderResponseInclude,
       });
       if (!existing) return false;
       if (existing.idempotencyRequestHash !== requestHash) {
         reply.code(422).send(idempotencyKeyReusedError);
         return true;
       }
-      reply.code(replayStatusCode[existing.status]).send(existing);
+      reply.code(replayStatusCode[existing.status]).send(toOrderResponse(existing));
       return true;
     };
 
@@ -142,6 +143,11 @@ export async function orderRoutes(fastify: FastifyInstance) {
       .sort((a, b) => a.productId.localeCompare(b.productId));
 
     const totalCents = orderItems.reduce((sum, item) => sum + item.quantity * item.unitPriceCents, 0);
+    if (!Number.isSafeInteger(totalCents) || totalCents <= 0 || totalCents > 2_147_483_647) {
+      return reply.code(422).send({
+        error: { code: "ORDER_TOTAL_OUT_OF_RANGE", message: "Order total must be between 1 and 2147483647 cents" },
+      });
+    }
 
     const dest = await geocoder.geocode(parsedBody.data.shippingAddress);
     if (!dest) {
@@ -157,7 +163,12 @@ export async function orderRoutes(fastify: FastifyInstance) {
       return reply.code(409).send(outOfStockError);
     }
 
-    let placed: { order: Order; attemptId: string } | undefined;
+    let placed:
+      | {
+          order: Prisma.OrderGetPayload<{ include: typeof orderResponseInclude }>;
+          attemptId: string;
+        }
+      | undefined;
     for (const candidate of ranked) {
       try {
         placed = await prisma.$transaction(async (tx) => {
@@ -185,6 +196,7 @@ export async function orderRoutes(fastify: FastifyInstance) {
               shippingLng: dest.lng,
               items: { create: orderItems },
             },
+            include: orderResponseInclude,
           });
           // Same transaction as the order, so the sweeper never sees a committed order without its attempt
           const attempt = await tx.paymentAttempt.create({
@@ -241,14 +253,15 @@ export async function orderRoutes(fastify: FastifyInstance) {
         const paidOrder = await prisma.order.update({
           where: { id: order.id, status: "PENDING_PAYMENT" },
           data: { status: "PAID", paymentReference: payment.reference },
+          include: orderResponseInclude,
         });
-        return reply.code(201).send(paidOrder);
+        return reply.code(201).send(toOrderResponse(paidOrder));
       } catch (err) {
         req.log.error(
           { err, orderId: order.id, paymentReference: payment.reference },
           "charged but could not mark PAID",
         );
-        return reply.code(202).send(order);
+        return reply.code(202).send(toOrderResponse(order));
       }
     }
 
@@ -257,6 +270,7 @@ export async function orderRoutes(fastify: FastifyInstance) {
         const updated = await tx.order.update({
           where: { id: order.id, status: "PENDING_PAYMENT" },
           data: { status: "PAYMENT_FAILED" },
+          include: orderResponseInclude,
         });
         for (const item of orderItems) {
           await tx.inventory.updateMany({
@@ -266,9 +280,9 @@ export async function orderRoutes(fastify: FastifyInstance) {
         }
         return updated;
       });
-      return reply.code(402).send(failedOrder);
+      return reply.code(402).send(toOrderResponse(failedOrder));
     }
 
-    return reply.code(202).send(order);
+    return reply.code(202).send(toOrderResponse(order));
   });
 }
