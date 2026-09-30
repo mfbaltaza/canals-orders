@@ -118,19 +118,19 @@ Like the test cards, two postal codes make the mock misbehave: `00408` never ans
 6. We look up the customer. If they don't exist, we return a 404.
 7. We look up the products. If any of them is unknown, we reject the request with a 400.
 8. We price every item from the database (never from the client), sort the items by product, and add up the total in cents.
-9. We geocode the shipping address by using our mock service. If we can't find it, we return a 422.
+9. We geocode the shipping address by using our mock service. If we can't find it, we return a 422. If the geocoder fails or doesn't answer within `GEOCODER_TIMEOUT_MS`, we return a 503.
 10. We rank the warehouses that have every item, closest first. If none has stock, we check whether an earlier, possibly duplicate request with the same key took it; if so we return that order, otherwise a 409.
-11. We try each warehouse in turn. In one transaction we take every item with a conditional decrement and create the order as `PENDING_PAYMENT`. If an item runs short, the transaction rolls back and we try the next warehouse. If a request with the same key committed first, we return its order. If every warehouse runs short, it's a 409.
+11. We try each warehouse in turn. In one transaction we take every item with a conditional decrement and create the order as `PENDING_PAYMENT` together with a `PENDING` payment attempt, so the sweeper never finds an order without one. If an item runs short, the transaction rolls back and we try the next warehouse. If a request with the same key committed first, we return its order. If every warehouse runs short, it's a 409.
 12. With the stock reserved and committed, we charge the card for the total, with the order id as the description. We stop waiting after `PAYMENT_TIMEOUT_MS`.
 13. Approved: we mark the order `PAID` and return 201. If saving that fails, we return 202, because the money has moved.
 14. Declined: in one transaction we mark the order `PAYMENT_FAILED` and put the stock back, then return 402.
 15. Unknown (the call timed out or failed): we leave the order `PENDING_PAYMENT` with its stock reserved and return 202.
 
-**Stuck orders.** Every minute, a sweeper inside the app looks for orders that have been `PENDING_PAYMENT` for over 10 minutes: the request crashed, or the provider never answered. It decides from the order's latest payment attempt: none → `EXPIRED`, approved → `PAID`, declined → `PAYMENT_FAILED`, unknown → it asks the provider for the charge by its description. Whenever the order doesn't end up `PAID`, its stock goes back in the same transaction. `npm run sweep` runs one pass by hand.
+**Stuck orders.** Every `SWEEP_INTERVAL_MS` (1 minute by default), a sweeper inside the app looks for orders that have been `PENDING_PAYMENT` for longer than `SWEEP_STALE_AFTER_MS` (10 minutes by default): the request crashed, or the provider never answered. It decides from the order's latest payment attempt: none → `EXPIRED`, approved → `PAID`, declined → `PAYMENT_FAILED`, pending or unknown → it asks the provider for the charge by its description. Whenever the order doesn't end up `PAID`, its stock goes back in the same transaction. `npm run sweep` runs one pass by hand.
 
 ## Decisions
 
-- **`Idempotency-Key` this is required and must be unique per request.** A repeated request maps to the previous order, so nothing is charged twice. We check this per customer, not globally, because another customer could send the same key and get someone else's order back.
+- **`Idempotency-Key` is required and must be unique per request.** A repeated request maps to the previous order, so nothing is charged twice. We check this per customer, not globally, because another customer could send the same key and get someone else's order back.
 
 - **We charge the card outside the transaction.** It is way easier to roll back a database write; a card charge can't be rolled back quite as easily. Committing first frees the stock row right away, so when dealing with the last units, other orders can go to a warehouse that has stock straight away instead of waiting on a lock. I would revisit only if the provider supports authorize-then-capture inside our flow.
 
